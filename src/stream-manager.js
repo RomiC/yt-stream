@@ -27,7 +27,8 @@ export function createStreamManager({ logger, config }) {
   let idleSince = null;
   let streamUptime = 0;
   let activeStart = null;
-  let generation = 0; // incremented on each start/stop to invalidate stale callbacks
+  let pendingYtdlp = null;
+  let generation = 0;
 
   function transition(newState) {
     if (!VALID_TRANSITIONS[state]?.includes(newState)) {
