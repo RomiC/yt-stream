@@ -1,12 +1,23 @@
-export async function registerRoutes(app, poller) {
+export async function registerRoutes(app, poller, streamManager) {
+  // --- GET /health -----------------------------------------------------------
+
   app.get('/health', async (request, reply) => {
     const ice = poller.getStatus();
+    const stream = streamManager.getState();
 
     const components = {
       icecast: ice.icecastReachable
-        ? { status: 'reachable' }
+        ? { status: 'reachable', mountpoint_active: ice.mountpointActive }
         : { status: 'unreachable', error: 'no response from Icecast admin API' },
     };
+
+    if (stream.state !== 'idle') {
+      components.ffmpeg = {
+        status: stream.state === 'streaming' ? 'running' : stream.state,
+        ...(stream.pid ? { pid: stream.pid } : {}),
+        ...(stream.state === 'streaming' ? { uptime_seconds: stream.uptime_seconds } : {}),
+      };
+    }
 
     const ok = ice.icecastReachable;
 
@@ -14,6 +25,82 @@ export async function registerRoutes(app, poller) {
     return {
       status: ok ? 'ok' : 'degraded',
       components,
+      ...(stream.state !== 'idle' ? {
+        stream: {
+          state: stream.state,
+          youtube_url: stream.youtube_url,
+          listeners: ice.listeners,
+        },
+      } : {}),
     };
   });
+
+  // --- GET /stream -----------------------------------------------------------
+
+  app.get('/stream', async (request, reply) => {
+    const { url } = request.query;
+
+    if (url) {
+      // Start or redirect
+      if (!isValidYoutubeUrl(url)) {
+        reply.code(400);
+        return { error: 'Invalid or missing YouTube URL' };
+      }
+
+      const current = streamManager.getState();
+
+      // Already running with the same URL — idempotent
+      if (current.state === 'streaming' && current.youtube_url === url) {
+        reply.redirect(streamUrl());
+        return;
+      }
+
+      // Start the pipeline (does nothing if same URL already streaming)
+      streamManager.start(url);
+
+      // Wait briefly for quick failures
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      const updated = streamManager.getState();
+      if (updated.state === 'streaming') {
+        reply.redirect(streamUrl());
+        return;
+      }
+
+      reply.code(202);
+      return { state: updated.state, youtube_url: updated.youtube_url };
+    }
+
+    // No url param — return current status
+    return streamManager.getState();
+  });
+
+  // --- DELETE /stream --------------------------------------------------------
+
+  app.delete('/stream', async (request, reply) => {
+    const current = streamManager.getState();
+
+    if (current.state === 'idle' || current.state === 'stopped') {
+      reply.code(404);
+      return { error: 'No active stream' };
+    }
+
+    await streamManager.stop();
+    const updated = streamManager.getState();
+
+    return {
+      state: updated.state,
+      youtube_url: updated.youtube_url,
+    };
+  });
+}
+
+function streamUrl() {
+  // Use the public hostname and Icecast port for the redirect
+  return `http://${process.env.PUBLIC_HOSTNAME || 'localhost'}:${process.env.ICECAST_PORT || '8000'}/stream`;
+}
+
+function isValidYoutubeUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  return /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/.test(url);
 }

@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import config from './config.js';
 import { registerRoutes } from './routes.js';
 import { startPolling } from './icecast-client.js';
+import { createStreamManager } from './stream-manager.js';
 
 const app = Fastify({
   logger: {
@@ -10,7 +11,13 @@ const app = Fastify({
 });
 
 const poller = startPolling(app.log);
+const streamManager = createStreamManager({ logger: app.log, config });
 
-await registerRoutes(app, poller);
+// Feed Icecast listener counts into TTL checking every 15s
+setInterval(() => {
+  streamManager.checkTtl(poller.getStatus().listeners);
+}, 15_000);
+
+await registerRoutes(app, poller, streamManager);
 
 await app.listen({ port: config.port, host: '0.0.0.0' });
