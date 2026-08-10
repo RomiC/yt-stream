@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeFile, rename, readFile } from 'fs/promises';
+import { writeFile, rename, readFile, stat } from 'fs/promises';
 import { join } from 'path';
 import { EventEmitter } from 'events';
 
@@ -47,10 +47,15 @@ export function createStreamManager({ logger, config }) {
     emitter.emit('state', { state, youtube_url: currentUrl });
   }
 
-  function extractAudioUrl(youtubeUrl) {
-    const args = ['-f', 'bestaudio', '--get-url'];
+  async function extractAudioUrl(youtubeUrl) {
+    const args = ['-f', 'bestaudio/best', '--get-url'];
     if (config.ytdlpProxy) args.push('--proxy', config.ytdlpProxy);
-    if (config.cookiesPath) args.push('--cookies', config.cookiesPath);
+    if (config.cookiesPath) {
+      try {
+        const s = await stat(config.cookiesPath);
+        if (s.isFile()) args.push('--cookies', config.cookiesPath);
+      } catch { /* path doesn't exist, skip */ }
+    }
     args.push(youtubeUrl);
 
     return new Promise((resolve, reject) => {
@@ -92,7 +97,12 @@ export function createStreamManager({ logger, config }) {
       if (ffmpegProc === proc) {
         ffmpegProc = null;
         if (state === 'streaming' || state === 'starting') {
-          scheduleRetry();
+          if (code === 0) {
+            logger.info('ffmpeg completed successfully, stopping stream');
+            transition('stopped');
+          } else {
+            scheduleRetry();
+          }
         }
       }
     });
