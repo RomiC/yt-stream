@@ -15,7 +15,8 @@ const streamManager = createStreamManager({ logger: app.log, config });
 
 // Feed Icecast listener counts into TTL checking every 15s
 setInterval(() => {
-  streamManager.checkTtl(poller.getStatus().listeners);
+  const status = poller.getStatus();
+  streamManager.checkTtl(status.listeners, status.icecastReachable);
 }, 15_000);
 
 await registerRoutes(app, poller, streamManager);

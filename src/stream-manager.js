@@ -139,6 +139,12 @@ export function createStreamManager({ logger, config }) {
     // Idempotent: same URL while streaming
     if (state === 'streaming' && youtubeUrl === currentUrl) return;
 
+    // Abort any in-progress start
+    if (activeStart) {
+      activeStart.aborted = true;
+      activeStart = null;
+    }
+
     // Stop current pipeline if running
     if (state !== 'idle' && state !== 'stopped') {
       killFfmpeg();
@@ -147,22 +153,38 @@ export function createStreamManager({ logger, config }) {
     currentUrl = youtubeUrl;
     retryCount = 0;
     idleSince = null;
+
+    const token = { aborted: false };
+    activeStart = token;
+
+    await doStart(token);
+  }
+
+  async function doStart(token) {
+    if (token.aborted) return;
     transition('starting');
 
     try {
-      const audioUrl = await extractAudioUrl(youtubeUrl);
+      const audioUrl = await extractAudioUrl(currentUrl);
+      if (token.aborted) return;
+
       ffmpegProc = spawnFfmpeg(audioUrl);
 
       // Give ffmpeg a moment to connect to Icecast, then check it's alive
       await new Promise(resolve => setTimeout(resolve, 2000));
+      if (token.aborted) return;
+
       if (ffmpegProc && ffmpegProc.exitCode === null) {
         transition('streaming');
         retryCount = 0;
       }
       // If ffmpeg already died, the 'close' handler will trigger scheduleRetry()
     } catch (err) {
+      if (token.aborted) return;
       logger.error({ err: err.message }, 'failed to start stream');
       scheduleRetry();
+    } finally {
+      if (activeStart === token) activeStart = null;
     }
   }
 
@@ -203,9 +225,13 @@ export function createStreamManager({ logger, config }) {
     transition('stopped');
   }
 
-  function checkTtl(listeners) {
+  function checkTtl(listeners, icecastReachable) {
     if (state !== 'streaming') return;
     if (config.streamTtlMinutes === 0) return;
+
+    // If Icecast is unreachable, we can't know the real listener count.
+    // Don't kill the stream — assume listeners are still present.
+    if (!icecastReachable) return;
 
     if (listeners === 0) {
       if (!idleSince) idleSince = Date.now();
@@ -271,5 +297,6 @@ export function createStreamManager({ logger, config }) {
     getState,
     checkTtl,
     on: emitter.on.bind(emitter),
+    off: emitter.off.bind(emitter),
   };
 }

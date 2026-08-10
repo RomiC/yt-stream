@@ -1,3 +1,5 @@
+import config from './config.js';
+
 export async function registerRoutes(app, poller, streamManager) {
   // --- GET /health -----------------------------------------------------------
 
@@ -55,20 +57,19 @@ export async function registerRoutes(app, poller, streamManager) {
         return;
       }
 
-      // Start the pipeline (does nothing if same URL already streaming)
+      // Start the pipeline
       streamManager.start(url);
 
-      // Wait briefly for quick failures
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Wait up to 5s for the stream to become active, then redirect
+      const started = await waitForStreaming(streamManager, 5000);
 
-      const updated = streamManager.getState();
-      if (updated.state === 'streaming') {
+      if (started) {
         reply.redirect(streamUrl());
         return;
       }
 
       reply.code(202);
-      return { state: updated.state, youtube_url: updated.youtube_url };
+      return { state: 'starting', youtube_url: url };
     }
 
     // No url param — return current status
@@ -96,8 +97,33 @@ export async function registerRoutes(app, poller, streamManager) {
 }
 
 function streamUrl() {
-  // Use the public hostname and Icecast port for the redirect
-  return `http://${process.env.PUBLIC_HOSTNAME || 'localhost'}:${process.env.ICECAST_PORT || '8000'}/stream`;
+  return `http://${config.publicHostname}:${config.icecast.publicPort}/stream`;
+}
+
+function waitForStreaming(manager, timeoutMs) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      teardown();
+      resolve(false);
+    }, timeoutMs);
+
+    function onState({ state }) {
+      if (state === 'streaming') {
+        teardown();
+        resolve(true);
+      } else if (state === 'stopped' || state === 'error') {
+        teardown();
+        resolve(false);
+      }
+    }
+
+    function teardown() {
+      clearTimeout(timer);
+      manager.off('state', onState);
+    }
+
+    manager.on('state', onState);
+  });
 }
 
 function isValidYoutubeUrl(url) {
