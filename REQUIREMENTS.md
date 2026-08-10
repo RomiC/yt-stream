@@ -397,7 +397,7 @@ with `admin:${ICECAST_ADMIN_PASSWORD}`) every **15 seconds** to:
 | ------------------------- | ----------- | -------------------------------------------------------- |
 | `PORT`                    | `8080`      | API server listen port                                   |
 | `ICECAST_HOST`            | `icecast`   | Icecast server hostname (Docker service name by default) |
-| `ICECAST_PORT`            | `8000`      | Icecast server port                                      |
+| `ICECAST_PORT`            | `8000`      | Public facing port for redirect URLs (internal always 8000) |
 | `ICECAST_SOURCE_PASSWORD` | `secret`    | Source password for ffmpeg → Icecast                     |
 | `ICECAST_ADMIN_PASSWORD`  | `admin`     | Admin password for polling Icecast API                   |
 | `PUBLIC_HOSTNAME`         | `localhost` | Public hostname used in `302` redirect URLs              |
@@ -523,7 +523,7 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - ./data:/app/data
+      - stream-data:/app/data
       - ./cookies.txt:/app/cookies.txt:ro # optional
     environment:
       PORT: "8080"
