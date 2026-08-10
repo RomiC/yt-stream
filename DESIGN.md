@@ -191,7 +191,7 @@ Industry-standard streaming server (off-the-shelf, no custom code).
 ## Deployment (Docker Compose)
 
 ```yaml
-version: "3.9"
+name: yt-stream
 services:
   icecast:
     image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620   # pinned digest for reproducible builds

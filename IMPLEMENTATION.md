@@ -52,7 +52,7 @@ system packages — must be pinned to exact versions for reproducible builds.
 | **npm** | `fastify` | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Manual review with `npm outdated` |
 | **Docker base image** | `node:24-alpine` | Pinned by digest: `node:24-alpine@sha256:d32cdf...` | Update when bumping Node or Alpine |
 | **Docker service image** | `moul/icecast` | Pinned by digest: `moul/icecast@sha256:b35cd6...` | Update when bumping Icecast |
-| **apk packages** | `ffmpeg`, `yt-dlp`, `curl` | Exact version: `ffmpeg=8.1.2-r0`, `yt-dlp=2026.07.04-r0`, `curl=8.21.0-r0` | Update when bumping any package |
+| **apk packages** | `ffmpeg`, `yt-dlp` | Exact version: `ffmpeg=8.1.2-r0`, `yt-dlp=2026.07.04-r0` | Update when bumping any package |
 
 **Commands for resolving digests and versions:**
 
@@ -121,7 +121,7 @@ FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a5
 RUN apk add --no-cache \
     ffmpeg=8.1.2-r0 \
     yt-dlp=2026.07.04-r0 \
-    curl=8.21.0-r0 \
+    yt-dlp-ejs-rt-quickjs=0.8.0-r1 \
     && rm -rf /var/cache/apk/*
 
 WORKDIR /app
