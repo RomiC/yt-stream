@@ -128,7 +128,11 @@ export function createStreamManager({ logger, config }) {
       clearTimeout(retryTimer);
       retryTimer = null;
     }
-    generation++; // invalidate any in-flight retry callbacks
+    generation++;
+    if (pendingYtdlp) {
+      pendingYtdlp.kill('SIGKILL');
+      pendingYtdlp = null;
+    }
     if (ffmpegProc) {
       const proc = ffmpegProc;
       ffmpegProc = null;
@@ -213,9 +217,12 @@ export function createStreamManager({ logger, config }) {
     retryTimer = setTimeout(async () => {
       if (generation !== gen) return; // cancelled by stop or new start
       if (state !== 'retrying') return;
+      const retryToken = { aborted: false };
       try {
-        const audioUrl = await extractAudioUrl(currentUrl, null);
+        const audioUrl = await extractAudioUrl(currentUrl, retryToken);
+        if (retryToken.ytdlpProc) pendingYtdlp = retryToken.ytdlpProc;
         if (generation !== gen || state !== 'retrying') return;
+        pendingYtdlp = null;
         ffmpegProc = spawnFfmpeg(audioUrl);
 
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -232,6 +239,11 @@ export function createStreamManager({ logger, config }) {
 
   async function stop() {
     if (state === 'idle' || state === 'stopped') return;
+    if (activeStart) {
+      activeStart.aborted = true;
+      if (activeStart.ytdlpProc) activeStart.ytdlpProc.kill('SIGKILL');
+      activeStart = null;
+    }
     killFfmpeg();
     transition('stopped');
   }
