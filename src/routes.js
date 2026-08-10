@@ -102,5 +102,5 @@ function streamUrl() {
 
 function isValidYoutubeUrl(url) {
   if (!url || typeof url !== 'string') return false;
-  return /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/.test(url);
+  return /^https?:\/\/(www\.)?(youtube\.com\/(watch\?v=|live\/|shorts\/)|youtu\.be\/)[\w-]+/.test(url);
 }
