@@ -1,0 +1,39 @@
+version: "3.9"
+services:
+  icecast:
+    image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
+    ports:
+      - "${ICECAST_PORT:-8000}:8000"
+    environment:
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
+    restart: unless-stopped
+
+  stream-service:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./cookies.txt:/app/cookies.txt:ro   # optional
+    environment:
+      PORT: "8080"
+      ICECAST_HOST: icecast
+      ICECAST_PORT: "8000"
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
+      DATA_DIR: /app/data
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
+      YTDLP_PROXY: "${YTDLP_PROXY:-}"
+      COOKIES_PATH: /app/cookies.txt
+    restart: unless-stopped
+    depends_on:
+      - icecast
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
