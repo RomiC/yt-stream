@@ -49,7 +49,7 @@ export function createStreamManager({ logger, config }) {
     emitter.emit('state', { state, youtube_url: currentUrl });
   }
 
-  async function extractAudioUrl(youtubeUrl) {
+  async function extractAudioUrl(youtubeUrl, token) {
     const args = ['-f', 'bestaudio/best', '--get-url'];
     if (config.ytdlpProxy) args.push('--proxy', config.ytdlpProxy);
     if (config.cookiesPath) {
@@ -62,6 +62,7 @@ export function createStreamManager({ logger, config }) {
 
     return new Promise((resolve, reject) => {
       const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      if (token) token.ytdlpProc = proc;
       let stdout = '';
       let stderr = '';
       proc.stdout.on('data', d => stdout += d);
@@ -139,12 +140,15 @@ export function createStreamManager({ logger, config }) {
   }
 
   async function start(youtubeUrl) {
-    // Idempotent: same URL while streaming
-    if (state === 'streaming' && youtubeUrl === currentUrl) return;
+    // Idempotent: same URL already active or starting
+    if (currentUrl === youtubeUrl && (state === 'streaming' || state === 'starting' || state === 'retrying')) {
+      return;
+    }
 
     // Abort any in-progress start
     if (activeStart) {
       activeStart.aborted = true;
+      if (activeStart.ytdlpProc) activeStart.ytdlpProc.kill('SIGKILL');
       activeStart = null;
     }
 
@@ -168,7 +172,7 @@ export function createStreamManager({ logger, config }) {
     transition('starting');
 
     try {
-      const audioUrl = await extractAudioUrl(currentUrl);
+      const audioUrl = await extractAudioUrl(currentUrl, token);
       if (token.aborted) return;
 
       ffmpegProc = spawnFfmpeg(audioUrl);
@@ -210,7 +214,8 @@ export function createStreamManager({ logger, config }) {
       if (generation !== gen) return; // cancelled by stop or new start
       if (state !== 'retrying') return;
       try {
-        const audioUrl = await extractAudioUrl(currentUrl);
+        const audioUrl = await extractAudioUrl(currentUrl, null);
+        if (generation !== gen || state !== 'retrying') return;
         ffmpegProc = spawnFfmpeg(audioUrl);
 
         await new Promise(resolve => setTimeout(resolve, 2000));

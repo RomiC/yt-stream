@@ -13,6 +13,11 @@ const app = Fastify({
 const poller = startPolling(app.log);
 const streamManager = createStreamManager({ logger: app.log, config });
 
+// Warn if running with default Icecast credentials
+if (config.icecast.sourcePassword === 'secret' || config.icecast.adminPassword === 'admin') {
+  app.log.warn('Using default Icecast credentials — set ICECAST_SOURCE_PASSWORD and ICECAST_ADMIN_PASSWORD in production');
+}
+
 // Feed Icecast listener counts into TTL checking every 15s
 setInterval(() => {
   const status = poller.getStatus();
