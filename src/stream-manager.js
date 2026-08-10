@@ -26,6 +26,8 @@ export function createStreamManager({ logger, config }) {
   let retryTimer = null;
   let idleSince = null;
   let streamUptime = 0;
+  let activeStart = null;
+  let generation = 0; // incremented on each start/stop to invalidate stale callbacks
 
   function transition(newState) {
     if (!VALID_TRANSITIONS[state]?.includes(newState)) {
@@ -125,6 +127,7 @@ export function createStreamManager({ logger, config }) {
       clearTimeout(retryTimer);
       retryTimer = null;
     }
+    generation++; // invalidate any in-flight retry callbacks
     if (ffmpegProc) {
       const proc = ffmpegProc;
       ffmpegProc = null;
@@ -199,10 +202,13 @@ export function createStreamManager({ logger, config }) {
     retryCount++;
     transition('retrying');
 
-    logger.info({ delay, attempt: retryCount, maxRetries: MAX_RETRIES }, 'scheduling retry');
+    const gen = generation;
+
+    logger.info({ delay, attempt: retryCount, maxRetries: MAX_RETRIES, gen }, 'scheduling retry');
 
     retryTimer = setTimeout(async () => {
-      if (state !== 'retrying') return; // cancelled
+      if (generation !== gen) return; // cancelled by stop or new start
+      if (state !== 'retrying') return;
       try {
         const audioUrl = await extractAudioUrl(currentUrl);
         ffmpegProc = spawnFfmpeg(audioUrl);

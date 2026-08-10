@@ -61,7 +61,7 @@ export async function registerRoutes(app, poller, streamManager) {
       streamManager.start(url);
 
       // Wait up to 5s for the stream to become active, then redirect
-      const started = await waitForStreaming(streamManager, 5000);
+      const started = await waitForStreaming(streamManager, url, 5000);
 
       if (started) {
         reply.redirect(streamUrl());
@@ -100,15 +100,15 @@ function streamUrl() {
   return `http://${config.publicHostname}:${config.icecast.publicPort}/stream`;
 }
 
-function waitForStreaming(manager, timeoutMs) {
+function waitForStreaming(manager, expectedUrl, timeoutMs) {
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       teardown();
       resolve(false);
     }, timeoutMs);
 
-    function onState({ state }) {
-      if (state === 'streaming') {
+    function onState({ state, youtube_url }) {
+      if (state === 'streaming' && youtube_url === expectedUrl) {
         teardown();
         resolve(true);
       } else if (state === 'stopped' || state === 'error') {
