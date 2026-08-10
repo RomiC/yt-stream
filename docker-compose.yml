@@ -13,10 +13,11 @@ services:
 
   stream-service:
     build: .
+    image: yt-stream:latest
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - ./data:/app/data
+      - stream-data:/app/data
       - ./cookies.txt:/app/cookies.txt:ro   # optional
     environment:
       PORT: "8080"
@@ -38,3 +39,6 @@ services:
         limits:
           cpus: "0.5"
           memory: "256M"
+
+volumes:
+  stream-data:
