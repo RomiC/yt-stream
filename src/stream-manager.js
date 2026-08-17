@@ -144,9 +144,14 @@ export function createStreamManager({ logger, config, icecast }) {
     idleSince = null;
     transition('starting');
 
+    // Cancellation token: set when start times out so the still-running
+    // yt-dlp extraction can be killed and must not spawn an encoder.
+    const token = { cancelled: false, ytdlpProc: null };
+
     try {
       await withTimeout((async () => {
-        const audioUrl = await extractAudioUrl(youtubeUrl, null);
+        const audioUrl = await extractAudioUrl(youtubeUrl, token);
+        if (token.cancelled) return; // timed out — do not spawn an encoder
         ffmpegProc = spawnFfmpeg(audioUrl);
 
         // Wait until the Icecast mountpoint is actually active
@@ -162,6 +167,8 @@ export function createStreamManager({ logger, config, icecast }) {
         throw new Error('mountpoint never became active');
       })(), START_TIMEOUT);
     } catch (err) {
+      token.cancelled = true;
+      if (token.ytdlpProc) token.ytdlpProc.kill('SIGKILL');
       logger.error({ err: err.message }, 'failed to start stream');
       killFfmpeg();
       transition('stopped');
