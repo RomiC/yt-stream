@@ -7,11 +7,14 @@ services:
     ports:
       - "${ICECAST_PORT:-8871}:8000"
     volumes:
-      - ./icecast.xml:/etc/icecast2/icecast.xml:ro
+      - ./icecast.xml:/icecast.xml:ro
     environment:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
+    # Copy our config into the writable location first — the image entrypoint
+    # uses sed -i which cannot rename over a Docker bind-mounted file.
+    command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
     restart: unless-stopped
 
   stream-service:
