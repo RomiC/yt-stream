@@ -48,17 +48,19 @@ the management interface.
 
 | Method   | Path                 | Params / Body                          | Response                                                                                     |
 | -------- | -------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `GET`    | `/stream?url=...`    | `url` (query param, required)          | `302` redirect to Icecast mountpoint (or `202` if still starting)                            |
+| `GET`    | `/stream?url=...`    | `url` (query param, required)          | `302` redirect to Icecast mountpoint on success; `500` if pipeline fails to start within 15s |
 | `GET`    | `/stream`            | —                                      | `200` — current stream status JSON (`idle` if nothing running)                               |
 | `DELETE` | `/stream`            | —                                      | `200` — stream stopped; `404` — no stream was running                                        |
 | `GET`    | `/health`            | —                                      | `200` — component statuses (ffmpeg, Icecast); `503` if degraded                              |
 
 **Key behaviours:**
 
-- **Idempotent** — `GET /stream?url=<same>` while streaming returns `302` immediately
-  without restarting the pipeline.
-- **Single stream** — requesting a different URL kills the current pipeline and starts a
-  new one. No multi-stream support in PoC.
+- **Single stream** — requesting a different URL kills the current pipeline (even if
+  still starting) and begins a new one. No multi-stream support in PoC.
+- **Synchronous** — `GET /stream?url=...` blocks until ffmpeg connects to Icecast
+  (up to 15s timeout), then redirects. On failure, returns `500` immediately.
+- **Idempotent** — requesting the same URL while streaming or starting returns
+  `302` immediately without restarting the pipeline.
 - **202 Accepted** while yt-dlp is extracting and ffmpeg is connecting; **302 Found**
   once audio is flowing to Icecast.
 - **No authentication** — intended for trusted-network use in PoC.
@@ -77,27 +79,23 @@ Manages the single stream's full lifecycle.
                        │
                        ▼
                  ┌──────────┐
-                 │ STARTING │  yt-dlp extracting, ffmpeg connecting to Icecast
+                 │ STARTING │  yt-dlp extracting, ffmpeg connecting
                  └────┬─────┘
                       │
               ┌───────┴────────┐
               ▼                ▼
         ┌──────────┐    ┌──────────┐
-        │STREAMING │    │  ERROR   │  yt-dlp failed, ffmpeg crash, Icecast unreachable
-        └────┬─────┘    └────┬─────┘
-             │               │
-    DELETE   │        ┌──────┴──────┐              0 listeners > TTL
-    /stream  │        ▼             ▼              ┌──────────────────┐
-             │  ┌──────────┐  ┌──────────┐        │                  │
-             │  │RETRYING  │  │ STOPPED  │  max   │                  │
-             │  │(backoff) │  └──────────┘ retries│                  │
-             │  └────┬─────┘       ▲              │                  │
-             │       │ success     │              │                  │
-             │       ▼            │              │                  │
-             └─▶┌──────────┐      │              │                  │
-                │ STOPPED  │◀─────┘              │                  │
-                └──────────┘◀────────────────────┘                  │
-                   manual DELETE, max retries, or TTL expiry
+        │STREAMING │    │ STOPPED  │  yt-dlp/ffmpeg failure or 15s timeout
+        └────┬─────┘    └──────────┘
+             │               ▲
+    DELETE   │               │
+    /stream  │  0 listeners  │
+       │     │  > TTL        │
+       ▼     ▼               │
+        ┌──────────┐         │
+        │ STOPPED  │◀────────┘
+        └──────────┘
+         manual DELETE, TTL expiry, or pipeline failure
 ```
 
 **Per-stream lifecycle:**
@@ -106,9 +104,8 @@ Manages the single stream's full lifecycle.
    highest-quality audio-only stream URL from YouTube.
 2. **Transcode & stream** — `ffmpeg` reads from the extracted URL, transcodes to MP3
    (libmp3lame) at 128 kbps, and pushes to Icecast via the `icecast://` protocol.
-3. **Health monitoring** — watches the ffmpeg process; if it exits unexpectedly, retries
-   extraction + streaming with exponential backoff (1s → 2s → 4s … capping at 60s, max
-   10 retries).
+3. **Health monitoring** — watches the ffmpeg process; if it exits unexpectedly,
+   transitions to `STOPPED`. Send another `GET /stream?url=...` to restart.
 4. **Listener polling** — periodically queries Icecast's `/admin/listmounts` XML API to
    count listeners and verify the mountpoint is active (15s interval). When
    `listeners == 0` for `STREAM_TTL_MINUTES` (default 15 min), the pipeline is torn
@@ -136,21 +133,10 @@ Industry-standard streaming server (off-the-shelf, no custom code).
 
 ---
 
-## Data Model (JSON File)
+## Data Model
 
-```jsonc
-// data/stream-state.json — single-stream state, persisted for restart recovery
-{
-  "youtube_url": "https://youtube.com/watch?v=...",
-  "state": "streaming"   // "starting" | "streaming" | "error" | "stopped"
-}
-```
-
-- Written atomically on every state transition (write to temp file, rename).
-- On startup, if file exists and `state` was `streaming` or `starting`, auto-resume the
-  pipeline.
-- If file is missing or corrupted, start in `IDLE` state.
-- No SQLite — single-stream PoC doesn't need it.
+No persistent state. Streams start fresh on each request and on service restart.
+The only state is in-memory: current YouTube URL, stream state, listener count.
 
 ---
 
@@ -180,7 +166,6 @@ Industry-standard streaming server (off-the-shelf, no custom code).
 | `ICECAST_SOURCE_PASSWORD` | `secret`    | Source password for ffmpeg → Icecast                     |
 | `ICECAST_ADMIN_PASSWORD`  | `admin`     | Admin password for polling Icecast API                   |
 | `PUBLIC_HOSTNAME`         | `localhost` | Public hostname used in `302` redirect URLs              |
-| `DATA_DIR`                | `./data`    | Directory for state persistence                          |
 | `LOG_LEVEL`               | `info`      | Logging level: `debug`, `info`, `warn`, `error`          |
 | `YTDLP_PROXY`             | _(none)_    | Proxy URL for yt-dlp (`--proxy` flag)                    |
 | `STREAM_TTL_MINUTES`      | `15`        | Auto-stop stream after N minutes with zero listeners     |
@@ -208,7 +193,6 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - stream-data:/app/data
       - ./cookies.txt:/app/cookies.txt:ro   # optional
     environment:
       PORT: "8080"
@@ -217,7 +201,6 @@ services:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
-      DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
       YTDLP_PROXY: "${YTDLP_PROXY:-}"
@@ -275,7 +258,6 @@ JSON structured logs to stdout via [pino](https://github.com/pinojs/pino)
 | Stream extract  | yt-dlp      | Only tool that reliably handles YouTube     |
 | Transcoder      | ffmpeg      | Universal, widely available                 |
 | Stream server   | Icecast 2.4 | Battle-tested, ICY metadata, fan-out        |
-| State store     | JSON file   | Single-stream PoC, zero dependencies        |
 | Logging         | pino (Fastify default) | Fastest JSON logger, zero-config with Fastify |
 | Container       | Docker + Compose | Images pinned by digest, one-command deploy  |
 

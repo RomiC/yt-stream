@@ -43,36 +43,21 @@ export async function registerRoutes(app, poller, streamManager) {
     const { url } = request.query;
 
     if (url) {
-      // Start or redirect
       if (!isValidYoutubeUrl(url)) {
         reply.code(400);
         return { error: 'Invalid or missing YouTube URL' };
       }
 
-      const current = streamManager.getState();
-
-      // Already running with the same URL — idempotent
-      if (current.state === 'streaming' && current.youtube_url === url) {
+      try {
+        await streamManager.start(url);
         reply.redirect(streamUrl());
         return;
+      } catch (err) {
+        reply.code(500);
+        return { error: 'Failed to start stream', details: err.message };
       }
-
-      // Start the pipeline
-      streamManager.start(url);
-
-      // Wait up to 5s for the stream to become active, then redirect
-      const started = await waitForStreaming(streamManager, url, 5000);
-
-      if (started) {
-        reply.redirect(streamUrl());
-        return;
-      }
-
-      reply.code(202);
-      return { state: 'starting', youtube_url: url };
     }
 
-    // No url param — return current status
     return streamManager.getState();
   });
 
@@ -87,43 +72,15 @@ export async function registerRoutes(app, poller, streamManager) {
     }
 
     await streamManager.stop();
-    const updated = streamManager.getState();
-
     return {
-      state: updated.state,
-      youtube_url: updated.youtube_url,
+      state: 'stopped',
+      youtube_url: current.youtube_url,
     };
   });
 }
 
 function streamUrl() {
   return `http://${config.publicHostname}:${config.icecast.publicPort}/stream`;
-}
-
-function waitForStreaming(manager, expectedUrl, timeoutMs) {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      teardown();
-      resolve(false);
-    }, timeoutMs);
-
-    function onState({ state, youtube_url }) {
-      if (state === 'streaming' && youtube_url === expectedUrl) {
-        teardown();
-        resolve(true);
-      } else if (state === 'stopped' || state === 'error') {
-        teardown();
-        resolve(false);
-      }
-    }
-
-    function teardown() {
-      clearTimeout(timer);
-      manager.off('state', onState);
-    }
-
-    manager.on('state', onState);
-  });
 }
 
 function isValidYoutubeUrl(url) {

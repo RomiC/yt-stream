@@ -1,34 +1,25 @@
 import { spawn } from 'child_process';
-import { writeFile, rename, readFile, stat } from 'fs/promises';
-import { join } from 'path';
+import { stat } from 'fs/promises';
 import { EventEmitter } from 'events';
-
-const BACKOFF = [1000, 2000, 4000, 8000, 16000, 60000];
-const MAX_RETRIES = 10;
 
 const VALID_TRANSITIONS = {
   idle: ['starting'],
-  starting: ['streaming', 'retrying', 'stopped'],
-  streaming: ['retrying', 'stopped', 'starting'],
-  retrying: ['streaming', 'stopped', 'retrying'],
+  starting: ['streaming', 'stopped'],
+  streaming: ['stopped', 'starting'],
   stopped: ['starting'],
 };
 
+const START_TIMEOUT = 15_000;
+
 export function createStreamManager({ logger, config }) {
   const emitter = new EventEmitter();
-  const STATE_FILE = join(config.dataDir, 'stream-state.json');
 
   let state = 'idle';
   let currentUrl = null;
   let ffmpegProc = null;
   let ffmpegStartedAt = null;
-  let retryCount = 0;
-  let retryTimer = null;
   let idleSince = null;
   let streamUptime = 0;
-  let activeStart = null;
-  let pendingYtdlp = null;
-  let generation = 0;
 
   function transition(newState) {
     if (!VALID_TRANSITIONS[state]?.includes(newState)) {
@@ -40,13 +31,10 @@ export function createStreamManager({ logger, config }) {
     if (newState === 'streaming') {
       ffmpegStartedAt = Date.now();
     }
-    if (newState === 'stopped') {
-      streamUptime = ffmpegStartedAt
-        ? streamUptime + Math.floor((Date.now() - ffmpegStartedAt) / 1000)
-        : streamUptime;
+    if (newState === 'stopped' && ffmpegStartedAt) {
+      streamUptime += Math.floor((Date.now() - ffmpegStartedAt) / 1000);
       ffmpegStartedAt = null;
     }
-    persist();
     emitter.emit('state', { state, youtube_url: currentUrl });
   }
 
@@ -70,7 +58,7 @@ export function createStreamManager({ logger, config }) {
       proc.stderr.on('data', d => stderr += d);
       proc.on('close', code => {
         if (code === 0) resolve(stdout.trim());
-        else reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(-200)}`));
+        else reject(new Error(stderr.slice(-200) || `yt-dlp exit ${code}`));
       });
       proc.on('error', reject);
     });
@@ -100,13 +88,8 @@ export function createStreamManager({ logger, config }) {
       logger.warn({ code, pid: proc.pid }, 'ffmpeg exited');
       if (ffmpegProc === proc) {
         ffmpegProc = null;
-        if (state === 'streaming' || state === 'starting') {
-          if (code === 0) {
-            logger.info('ffmpeg completed successfully, stopping stream');
-            transition('stopped');
-          } else {
-            scheduleRetry();
-          }
+        if (state === 'streaming') {
+          transition('stopped');
         }
       }
     });
@@ -115,8 +98,8 @@ export function createStreamManager({ logger, config }) {
       logger.error({ err: err.message }, 'ffmpeg spawn error');
       if (ffmpegProc === proc) {
         ffmpegProc = null;
-        if (state === 'streaming' || state === 'starting') {
-          scheduleRetry();
+        if (state === 'streaming') {
+          transition('stopped');
         }
       }
     });
@@ -125,15 +108,6 @@ export function createStreamManager({ logger, config }) {
   }
 
   function killFfmpeg() {
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
-    generation++;
-    if (pendingYtdlp) {
-      pendingYtdlp.kill('SIGKILL');
-      pendingYtdlp = null;
-    }
     if (ffmpegProc) {
       const proc = ffmpegProc;
       ffmpegProc = null;
@@ -146,15 +120,15 @@ export function createStreamManager({ logger, config }) {
 
   async function start(youtubeUrl) {
     // Idempotent: same URL already active or starting
-    if (currentUrl === youtubeUrl && (state === 'streaming' || state === 'starting' || state === 'retrying')) {
-      return;
-    }
-
-    // Abort any in-progress start
-    if (activeStart) {
-      activeStart.aborted = true;
-      if (activeStart.ytdlpProc) activeStart.ytdlpProc.kill('SIGKILL');
-      activeStart = null;
+    if (currentUrl === youtubeUrl && (state === 'streaming' || state === 'starting')) {
+      if (state === 'streaming') return;
+      return new Promise((resolve, reject) => {
+        function onState({ state: s }) {
+          if (s === 'streaming') { emitter.off('state', onState); resolve(); }
+          if (s === 'stopped') { emitter.off('state', onState); reject(new Error('stream failed')); }
+        }
+        emitter.on('state', onState);
+      });
     }
 
     // Stop current pipeline if running
@@ -163,98 +137,45 @@ export function createStreamManager({ logger, config }) {
     }
 
     currentUrl = youtubeUrl;
-    retryCount = 0;
     idleSince = null;
-
-    const token = { aborted: false };
-    activeStart = token;
-
-    await doStart(token);
-  }
-
-  async function doStart(token) {
-    if (token.aborted) return;
     transition('starting');
 
     try {
-      const audioUrl = await extractAudioUrl(currentUrl, token);
-      if (token.aborted) return;
-
-      ffmpegProc = spawnFfmpeg(audioUrl);
-
-      // Give ffmpeg a moment to connect to Icecast, then check it's alive
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      if (token.aborted) return;
-
-      if (ffmpegProc && ffmpegProc.exitCode === null) {
-        transition('streaming');
-        retryCount = 0;
-      }
-      // If ffmpeg already died, the 'close' handler will trigger scheduleRetry()
-    } catch (err) {
-      if (token.aborted) return;
-      logger.error({ err: err.message }, 'failed to start stream');
-      scheduleRetry();
-    } finally {
-      if (activeStart === token) activeStart = null;
-    }
-  }
-
-  function scheduleRetry() {
-    if (retryCount >= MAX_RETRIES) {
-      logger.error({ retries: retryCount }, 'max retries exhausted');
-      transition('stopped');
-      return;
-    }
-
-    const delay = BACKOFF[Math.min(retryCount, BACKOFF.length - 1)];
-    retryCount++;
-    transition('retrying');
-
-    const gen = generation;
-
-    logger.info({ delay, attempt: retryCount, maxRetries: MAX_RETRIES, gen }, 'scheduling retry');
-
-    retryTimer = setTimeout(async () => {
-      if (generation !== gen) return; // cancelled by stop or new start
-      if (state !== 'retrying') return;
-      const retryToken = { aborted: false };
-      try {
-        const audioUrl = await extractAudioUrl(currentUrl, retryToken);
-        if (retryToken.ytdlpProc) pendingYtdlp = retryToken.ytdlpProc;
-        if (generation !== gen || state !== 'retrying') return;
-        pendingYtdlp = null;
+      await withTimeout((async () => {
+        const audioUrl = await extractAudioUrl(youtubeUrl, null);
         ffmpegProc = spawnFfmpeg(audioUrl);
 
         await new Promise(resolve => setTimeout(resolve, 2000));
-        if (ffmpegProc && ffmpegProc.exitCode === null) {
-          transition('streaming');
-          retryCount = 0;
+
+        if (!ffmpegProc || ffmpegProc.exitCode !== null) {
+          throw new Error('ffmpeg failed to start');
         }
-      } catch (err) {
-        logger.error({ err: err.message, attempt: retryCount }, 'retry failed');
-        scheduleRetry();
-      }
-    }, delay);
+        transition('streaming');
+      })(), START_TIMEOUT);
+    } catch (err) {
+      logger.error({ err: err.message }, 'failed to start stream');
+      killFfmpeg();
+      transition('stopped');
+      throw err;
+    }
   }
 
   async function stop() {
     if (state === 'idle' || state === 'stopped') return;
-    if (activeStart) {
-      activeStart.aborted = true;
-      if (activeStart.ytdlpProc) activeStart.ytdlpProc.kill('SIGKILL');
-      activeStart = null;
-    }
     killFfmpeg();
     transition('stopped');
+  }
+
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), ms)),
+    ]);
   }
 
   function checkTtl(listeners, icecastReachable) {
     if (state !== 'streaming') return;
     if (config.streamTtlMinutes === 0) return;
-
-    // If Icecast is unreachable, we can't know the real listener count.
-    // Don't kill the stream — assume listeners are still present.
     if (!icecastReachable) return;
 
     if (listeners === 0) {
@@ -283,37 +204,6 @@ export function createStreamManager({ logger, config }) {
       pid: ffmpegProc?.pid ?? null,
     };
   }
-
-  // --- Persistence ---
-
-  async function persist() {
-    try {
-      const tmp = STATE_FILE + '.tmp';
-      await writeFile(tmp, JSON.stringify({ youtube_url: currentUrl, state }));
-      await rename(tmp, STATE_FILE);
-    } catch (err) {
-      logger.error({ err: err.message }, 'failed to persist state');
-    }
-  }
-
-  async function loadPersistedState() {
-    try {
-      const data = await readFile(STATE_FILE, 'utf-8');
-      return JSON.parse(data);
-    } catch {
-      return null;
-    }
-  }
-
-  // --- Startup resume ---
-
-  setImmediate(async () => {
-    const saved = await loadPersistedState();
-    if (saved && saved.youtube_url && (saved.state === 'streaming' || saved.state === 'starting')) {
-      logger.info({ url: saved.youtube_url }, 'resuming stream from saved state');
-      start(saved.youtube_url);
-    }
-  });
 
   return {
     start,

@@ -1,6 +1,10 @@
 # Implementation Plan
 
-## Architecture Overview
+> **Note:** The final implementation was simplified from this plan:
+> retries, persistence, and startup resume were removed. See DESIGN.md
+> for the current architecture.
+
+## Architecture Overview (historical)
 
 ```
 src/

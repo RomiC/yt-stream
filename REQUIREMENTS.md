@@ -52,44 +52,26 @@ Start streaming a YouTube URL and redirect to the Icecast mountpoint.
 | `idle`        | —                    | Start pipeline, return `302` once streaming (or `202` while starting) |
 | `streaming`   | Yes                  | Return `302` immediately (idempotent, no restart)                     |
 | `streaming`   | No                   | Stop current pipeline, start new one, return `302`                    |
-| `starting`    | Yes                  | Return `202 Accepted` — pipeline still initializing                   |
-| `starting`    | No                   | Kill in-progress startup, start new one, return `202`                 |
-| `error`       | —                    | Same as `idle` — attempt fresh start, return `302`                    |
-| `stopped`     | —                    | Same as `idle` — clear the stopped state and restart                  |
+| `streaming`   | Yes                  | Return `302` immediately (idempotent, no restart)                     |
+| `streaming`   | No                   | Kill current pipeline, start new one, block until ready, return `302` |
+| `starting`    | Yes                  | Wait for streaming to complete, then return `302`                     |
+| `starting`    | No                   | Kill in-progress startup, start new one, block until ready            |
+| `stopped`     | —                    | Same as `idle` — start fresh and block until ready                    |
 
 **Responses:**
 
 - **`302 Found`** — pipeline is streaming. `Location` header points to:
-
   ```
   http://${PUBLIC_HOSTNAME}:${ICECAST_PORT}/stream
-  ```
-
-  Body is JSON:
-
-  ```json
-  {
-    "state": "streaming",
-    "stream_url": "http://host:8000/stream",
-    "youtube_url": "https://youtube.com/watch?v=...",
-    "listeners": 3
-  }
-  ```
-
-- **`202 Accepted`** — pipeline is still starting (yt-dlp extracting, ffmpeg connecting).
-  Body is JSON:
-
-  ```json
-  {
-    "state": "starting",
-    "youtube_url": "https://youtube.com/watch?v=..."
-  }
   ```
 
 - **`400 Bad Request`** — missing or invalid `url` parameter.
 
 - **`500 Internal Server Error`** — pipeline failed to start (yt-dlp error, Icecast
-  unreachable, etc.).
+  unreachable, or 15s timeout).
+    ```json
+    { "error": "Failed to start stream", "details": "..." }
+    ```
 
 ---
 
@@ -209,33 +191,29 @@ When no stream is running, `ffmpeg` and `stream` are omitted:
 
 ```
                  ┌──────────┐
-    GET /stream  │   IDLE   │  (no pipeline, nothing persisted except maybe last URL)
+    GET /stream  │   IDLE   │
      w/ url ────▶│          │
                  └─────┬────┘
                        │
                        ▼
                  ┌──────────┐
-                 │ STARTING │  yt-dlp extracting, ffmpeg connecting to Icecast
+                 │ STARTING │  yt-dlp extracting, ffmpeg connecting
                  └────┬─────┘
                       │
               ┌───────┴────────┐
               ▼                ▼
         ┌──────────┐    ┌──────────┐
-        │STREAMING │    │  ERROR   │  yt-dlp failed, ffmpeg crash, Icecast unreachable
-        └────┬─────┘    └────┬─────┘
-             │               │
-    DELETE   │        ┌──────┴──────┐              0 listeners > TTL
-    /stream  │        ▼             ▼              ┌──────────────────┐
-             │  ┌──────────┐  ┌──────────┐        │                  │
-             │  │RETRYING  │  │ STOPPED  │  max   │                  │
-             │  │(backoff) │  └──────────┘ retries│                  │
-             │  └────┬─────┘       ▲              │                  │
-             │       │ success     │              │                  │
-             │       ▼            │              │                  │
-             └─▶┌──────────┐      │              │                  │
-                │ STOPPED  │◀─────┘              │                  │
-                └──────────┘◀────────────────────┘                  │
-                   manual DELETE, max retries, or TTL expiry
+        │STREAMING │    │ STOPPED  │  yt-dlp/ffmpeg failure or 15s timeout
+        └────┬─────┘    └──────────┘
+             │               ▲
+    DELETE   │               │
+    /stream  │  0 listeners  │
+       │     │  > TTL        │
+       ▼     ▼               │
+        ┌──────────┐         │
+        │ STOPPED  │◀────────┘
+        └──────────┘
+        manual DELETE, TTL expiry, or pipeline failure
 ```
 
 **Transitions:**
@@ -244,37 +222,16 @@ When no stream is running, `ffmpeg` and `stream` are omitted:
 | ----------- | --------------------------- | ----------- | ------------------------------------------------------------ |
 | `IDLE`      | `GET /stream?url=...`       | `STARTING`  | Spawn yt-dlp + ffmpeg                                        |
 | `STARTING`  | ffmpeg connects to Icecast  | `STREAMING` | Pipeline healthy, audio flowing                              |
-| `STARTING`  | yt-dlp or ffmpeg fails      | `RETRYING`  | Retry with backoff (see below)                               |
-| `RETRYING`  | Retry succeeds              | `STREAMING` |                                                              |
-| `RETRYING`  | Max retries exhausted       | `STOPPED`   | 5 retries, 60s max backoff (see below)                       |
-| `STREAMING` | ffmpeg exits unexpectedly   | `RETRYING`  | YouTube URL expired, network blip, etc.                      |
+| `STARTING`  | yt-dlp or ffmpeg fails      | `STOPPED`   | Request returns 500                                           |
+| `STREAMING` | ffmpeg exits unexpectedly   | `STOPPED`   | No retry — client sends another request to restart            |
 | `STREAMING` | `DELETE /stream`            | `STOPPED`   | Manual stop, kill ffmpeg via SIGTERM (then SIGKILL after 5s) |
-| `STREAMING` | `GET /stream?url=<new>`     | `STARTING`  | Kill current pipeline, start new one                         |
+| `STREAMING` | `GET /stream?url=<new>`     | `STARTING`  | Kill current pipeline, start new one                          |
+| `STARTING`  | `GET /stream?url=<new>`     | `STARTING`  | Kill current startup, start new one                           |
 | `STREAMING` | 0 listeners for TTL minutes | `STOPPED`   | Auto-stop to save resources (TTL defaults to 15 min)         |
-| `STARTING`  | `GET /stream?url=<new>`     | `STARTING`  | Kill current startup, start new one                          |
-| `STOPPED`   | `GET /stream?url=...`       | `STARTING`  | Clear stopped state, restart                                 |
-| any         | `GET /stream?url=<same>`    | no change   | Idempotent — just redirect if streaming, or wait if starting |
-
-**Retry strategy (exponential backoff):**
-
-| Attempt | Delay |
-| ------- | ----- |
-| 1       | 1s    |
-| 2       | 2s    |
-| 3       | 4s    |
-| 4       | 8s    |
-| 5       | 16s   |
-| 6+      | 60s   |
-
-After **10 total retries**, give up and transition to `STOPPED`.
-
----
+| `STOPPED`   | `GET /stream?url=...`       | `STARTING`  | Start fresh                                                     |
+| any         | `GET /stream?url=<same>`    | no change   | Idempotent — redirect if streaming, wait if starting             |
 
 ## Pipeline
-
-5. **TTL auto-stop** — tracks consecutive idle time (zero listeners). When it exceeds
-   `STREAM_TTL_MINUTES` (default 15), the pipeline is killed and state becomes
-   `STOPPED`. Any new listener connection resets the idle timer.
 
 ### Extraction
 
@@ -327,36 +284,6 @@ are sufficient (set in `docker-compose.yml`):
 
 ---
 
-## Persistence (Resume on Restart)
-
-The service persists enough state to **automatically resume** the last stream after a
-restart or crash.
-
-**Storage:** A single JSON file at `${DATA_DIR:-./data}/stream-state.json`.
-
-```json
-{
-  "youtube_url": "https://youtube.com/watch?v=...",
-  "state": "streaming"
-}
-```
-
-**On startup:**
-
-1. Read `stream-state.json` if it exists.
-2. If `state` was `streaming` or `starting`, attempt to restart the pipeline.
-3. If restart fails, follow normal retry → error → stopped logic.
-4. If restart succeeds, the stream is live — nothing else changes.
-
-**On state change:**
-
-- Write `stream-state.json` atomically (write to temp file, then rename).
-- State changes include: starting, streaming, error, stopped, idle (on DELETE).
-
-**If the file is missing or corrupted:** Start in `IDLE` state.
-
----
-
 ## Icecast Configuration
 
 Off-the-shelf Icecast 2.4 server with minimal config.
@@ -401,8 +328,6 @@ with `admin:${ICECAST_ADMIN_PASSWORD}`) every **15 seconds** to:
 | `ICECAST_SOURCE_PASSWORD` | `secret`    | Source password for ffmpeg → Icecast                     |
 | `ICECAST_ADMIN_PASSWORD`  | `admin`     | Admin password for polling Icecast API                   |
 | `PUBLIC_HOSTNAME`         | `localhost` | Public hostname used in `302` redirect URLs              |
-| `DATA_DIR`                | `./data`    | Directory for state persistence                          |
-| `LOG_LEVEL`               | `info`      | Logging level: `debug`, `info`, `warn`, `error`          |
 | `STREAM_TTL_MINUTES`      | `15`        | Auto-stop after N minutes with zero listeners            |
 
 ### Route Isolation
@@ -532,7 +457,6 @@ services:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
-      DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
       YTDLP_PROXY: "${YTDLP_PROXY:-}" # optional
@@ -555,11 +479,10 @@ services:
 yt-stream/
 ├── src/
 │   ├── index.js            # Entry point, Fastify app setup, routes
-│   ├── stream-manager.js   # Core logic: lifecycle, pipeline, retries, state persistence
+│   ├── stream-manager.js   # Core logic: lifecycle, pipeline, TTL
 │   ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status)
-│   └── health.js           # Health check logic (component status aggregation)
-├── data/                   # Mounted volume for state persistence
-│   └── stream-state.json   # { youtube_url, state }
+│   ├── routes.js           # HTTP route handlers
+│   └── config.js           # Environment variable loading
 ├── cookies.txt             # Optional YouTube cookies for restricted videos
 ├── Dockerfile
 ├── docker-compose.yml
