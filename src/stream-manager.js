@@ -119,17 +119,9 @@ export function createStreamManager({ logger, config, icecast }) {
   }
 
   async function start(youtubeUrl) {
-    // Idempotent: same URL already active or starting
-    if (currentUrl === youtubeUrl && (state === 'streaming' || state === 'starting')) {
-      if (state === 'streaming') return;
-      return new Promise((resolve, reject) => {
-        function onState({ state: s, youtube_url: u }) {
-          if (u !== youtubeUrl) return; // ignore events for a superseding URL
-          if (s === 'streaming') { emitter.off('state', onState); resolve(); }
-          if (s === 'stopped') { emitter.off('state', onState); reject(new Error('stream failed')); }
-        }
-        emitter.on('state', onState);
-      });
+    // Idempotent: same URL already streaming — no-op
+    if (currentUrl === youtubeUrl && state === 'streaming') {
+      return;
     }
 
     // Stop current pipeline if running

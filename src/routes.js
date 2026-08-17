@@ -39,6 +39,8 @@ export async function registerRoutes(app, poller, streamManager) {
 
   // --- GET /stream -----------------------------------------------------------
 
+  let requestInProgress = false;
+
   app.get('/stream', async (request, reply) => {
     const { url } = request.query;
 
@@ -48,6 +50,12 @@ export async function registerRoutes(app, poller, streamManager) {
         return { error: 'Invalid or missing YouTube URL' };
       }
 
+      if (requestInProgress) {
+        reply.code(429);
+        return { error: 'A stream operation is in progress' };
+      }
+
+      requestInProgress = true;
       try {
         await streamManager.start(url);
         reply.redirect(streamUrl());
@@ -55,6 +63,8 @@ export async function registerRoutes(app, poller, streamManager) {
       } catch (err) {
         reply.code(500);
         return { error: 'Failed to start stream', details: err.message };
+      } finally {
+        requestInProgress = false;
       }
     }
 
@@ -64,6 +74,11 @@ export async function registerRoutes(app, poller, streamManager) {
   // --- DELETE /stream --------------------------------------------------------
 
   app.delete('/stream', async (request, reply) => {
+    if (requestInProgress) {
+      reply.code(429);
+      return { error: 'A stream operation is in progress' };
+    }
+
     const current = streamManager.getState();
 
     if (current.state === 'idle' || current.state === 'stopped') {
@@ -71,11 +86,16 @@ export async function registerRoutes(app, poller, streamManager) {
       return { error: 'No active stream' };
     }
 
-    await streamManager.stop();
-    return {
-      state: 'stopped',
-      youtube_url: current.youtube_url,
-    };
+    requestInProgress = true;
+    try {
+      await streamManager.stop();
+      return {
+        state: 'stopped',
+        youtube_url: current.youtube_url,
+      };
+    } finally {
+      requestInProgress = false;
+    }
   });
 }
 

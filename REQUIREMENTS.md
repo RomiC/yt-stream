@@ -397,6 +397,7 @@ All error responses follow a consistent shape:
 - `302` — redirect to Icecast
 - `400` — bad request (missing/invalid parameters)
 - `404` — resource not found (no active stream for DELETE)
+- `429` — too many requests (a stream is already starting)
 - `500` — internal server error (pipeline failure)
 - `503` — service unavailable (Icecast unreachable)
 
