@@ -123,7 +123,8 @@ export function createStreamManager({ logger, config, icecast }) {
     if (currentUrl === youtubeUrl && (state === 'streaming' || state === 'starting')) {
       if (state === 'streaming') return;
       return new Promise((resolve, reject) => {
-        function onState({ state: s }) {
+        function onState({ state: s, youtube_url: u }) {
+          if (u !== youtubeUrl) return; // ignore events for a superseding URL
           if (s === 'streaming') { emitter.off('state', onState); resolve(); }
           if (s === 'stopped') { emitter.off('state', onState); reject(new Error('stream failed')); }
         }
