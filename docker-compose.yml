@@ -4,7 +4,9 @@ services:
   icecast:
     image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
     ports:
-      - "${ICECAST_PORT:-8000}:8000"
+      - "${ICECAST_PORT:-8871}:8000"
+    volumes:
+      - ./icecast.xml:/etc/icecast2/icecast.xml:ro
     environment:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
@@ -15,7 +17,7 @@ services:
     build: .
     image: yt-stream:latest
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
       - ./cookies.txt:/app/cookies.txt:ro   # optional
@@ -24,7 +26,7 @@ services:
       ICECAST_HOST: icecast
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_PORT: "${ICECAST_PORT:-8000}"  # public port for redirect URLs only
+      ICECAST_PORT: "${ICECAST_PORT:-8871}"  # public port for redirect URLs only
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"

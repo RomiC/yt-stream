@@ -43,6 +43,7 @@ export function startPolling(logger) {
   const interval = setInterval(() => poll(logger), POLL_INTERVAL);
   return {
     getStatus: () => ({ ...status }),
+    pollNow: async () => { await poll(logger); return { ...status }; },
     stop: () => clearInterval(interval),
   };
 }

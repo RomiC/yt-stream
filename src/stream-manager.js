@@ -11,7 +11,7 @@ const VALID_TRANSITIONS = {
 
 const START_TIMEOUT = 15_000;
 
-export function createStreamManager({ logger, config }) {
+export function createStreamManager({ logger, config, icecast }) {
   const emitter = new EventEmitter();
 
   let state = 'idle';
@@ -134,6 +134,17 @@ export function createStreamManager({ logger, config }) {
     // Stop current pipeline if running
     if (state !== 'idle' && state !== 'stopped') {
       killFfmpeg();
+      // Wait for the old source to fully disconnect from Icecast so the
+      // mountpoint is released before the new source tries to claim it.
+      await withTimeout((async () => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const s = await icecast.pollNow();
+          if (!s.mountpointActive) return;
+          await sleep(500);
+        }
+        logger.warn('old mountpoint still active after 10s, proceeding anyway');
+      })(), 10_000);
     }
 
     currentUrl = youtubeUrl;
@@ -145,12 +156,17 @@ export function createStreamManager({ logger, config }) {
         const audioUrl = await extractAudioUrl(youtubeUrl, null);
         ffmpegProc = spawnFfmpeg(audioUrl);
 
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        if (!ffmpegProc || ffmpegProc.exitCode !== null) {
-          throw new Error('ffmpeg failed to start');
+        // Wait until the Icecast mountpoint is actually active
+        const deadline = Date.now() + START_TIMEOUT;
+        while (Date.now() < deadline) {
+          const s = await icecast.pollNow();
+          if (s.mountpointActive) {
+            transition('streaming');
+            return;
+          }
+          await sleep(500);
         }
-        transition('streaming');
+        throw new Error('mountpoint never became active');
       })(), START_TIMEOUT);
     } catch (err) {
       logger.error({ err: err.message }, 'failed to start stream');
@@ -173,12 +189,25 @@ export function createStreamManager({ logger, config }) {
     ]);
   }
 
-  function checkTtl(listeners, icecastReachable) {
-    if (state !== 'streaming') return;
-    if (config.streamTtlMinutes === 0) return;
-    if (!icecastReachable) return;
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
-    if (listeners === 0) {
+  function checkHealth(iceStatus) {
+    if (state !== 'streaming') return;
+
+    // Source died but ffmpeg is still alive retrying input
+    if (iceStatus.icecastReachable && !iceStatus.mountpointActive) {
+      logger.warn('mountpoint lost while streaming — stopping');
+      killFfmpeg();
+      transition('stopped');
+      return;
+    }
+
+    if (config.streamTtlMinutes === 0) return;
+    if (!iceStatus.icecastReachable) return;
+
+    if (iceStatus.listeners === 0) {
       if (!idleSince) idleSince = Date.now();
       else if (Date.now() - idleSince >= config.streamTtlMinutes * 60_000) {
         logger.info({ ttlMinutes: config.streamTtlMinutes }, 'TTL expired, stopping stream');
@@ -209,7 +238,7 @@ export function createStreamManager({ logger, config }) {
     start,
     stop,
     getState,
-    checkTtl,
+    checkHealth,
     on: emitter.on.bind(emitter),
     off: emitter.off.bind(emitter),
   };
