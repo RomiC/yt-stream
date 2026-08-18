@@ -24,7 +24,7 @@ services:
       - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
-      - ./cookies.txt:/app/cookies.txt:ro   # optional
+      - ./cookies.txt:/app/cookies.txt   # writable — yt-dlp refreshes cookies in place
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
