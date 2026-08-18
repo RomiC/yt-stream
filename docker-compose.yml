@@ -16,6 +16,11 @@ services:
     # uses sed -i which cannot rename over a Docker bind-mounted file.
     command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "256M"
 
   stream-service:
     build: .
@@ -24,7 +29,7 @@ services:
       - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
-      - ./cookies.txt:/app/cookies.txt:ro   # optional
+      - ./cookies.txt:/app/cookies.txt   # writable — yt-dlp refreshes cookies in place
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
@@ -44,7 +49,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "256M"
+          memory: "1G"   # yt-dlp JS challenge solver needs ~170MB on top of app
 
 volumes:
   stream-data:
