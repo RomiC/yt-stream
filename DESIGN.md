@@ -212,7 +212,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "256M"
+          memory: "1G"
 ```
 
 ---

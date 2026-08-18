@@ -44,7 +44,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "256M"
+          memory: "1G"   # yt-dlp JS challenge solver needs ~170MB on top of app
 
 volumes:
   stream-data:

@@ -40,7 +40,12 @@ export function createStreamManager({ logger, config, icecast }) {
   }
 
   async function extractAudioUrl(youtubeUrl, token) {
-    const args = ['-f', 'best[height<=360]', '--get-url'];
+    const args = [
+      '-f', 'best[height<=360]',
+      '--get-url',
+      // Use quickjs JS runtime — node OOMs under container memory limits
+      '--no-js-runtimes', '--js-runtimes', 'quickjs',
+    ];
     if (config.ytdlpProxy) args.push('--proxy', config.ytdlpProxy);
     if (config.cookiesPath) {
       try {
