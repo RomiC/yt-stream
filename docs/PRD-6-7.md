@@ -39,11 +39,15 @@ mountpoint.
 ```
 GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
   → 302 Location: /stream            (audio mount, no key needed)
-  → 400 invalid/missing url
+  → 400 empty/invalid url
   → 401 missing/invalid key
   → 429 a stream operation is already in progress
   → 500 extraction/transcode/icecast failure
 ```
+
+**Status vs start distinction:** `GET /api/stream` **without** a `url` query
+parameter returns the current status (`200`). The `400` applies only when a `url`
+is present but empty or invalid.
 
 **Concurrency:** one in-flight operation at a time. The route holds a
 `requestInProgress` flag; concurrent start/delete requests are dropped with `429`.
