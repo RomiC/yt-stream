@@ -16,6 +16,11 @@ services:
     # uses sed -i which cannot rename over a Docker bind-mounted file.
     command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "256M"
 
   stream-service:
     build: .
