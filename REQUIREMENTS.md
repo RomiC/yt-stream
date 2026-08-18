@@ -450,7 +450,7 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - stream-data:/app/data
-      - ./cookies.txt:/app/cookies.txt:ro # optional
+      - ./cookies.txt:/app/cookies.txt # optional
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
