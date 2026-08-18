@@ -39,7 +39,7 @@ export function createStreamManager({ logger, config, icecast }) {
   }
 
   async function extractAudioUrl(youtubeUrl, token) {
-    const args = ['-f', 'bestaudio/best', '--get-url'];
+    const args = ['-f', 'best[height<=360]', '--get-url'];
     if (config.ytdlpProxy) args.push('--proxy', config.ytdlpProxy);
     if (config.cookiesPath) {
       try {
