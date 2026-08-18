@@ -9,7 +9,8 @@ const VALID_TRANSITIONS = {
   stopped: ['starting'],
 };
 
-const START_TIMEOUT = 15_000;
+const EXTRACT_TIMEOUT = 60_000;   // yt-dlp extraction can be slow (cookies, VPS latency)
+const MOUNTPOINT_TIMEOUT = 30_000; // ffmpeg connecting to YouTube + Icecast
 
 export function createStreamManager({ logger, config, icecast }) {
   const emitter = new EventEmitter();
@@ -149,13 +150,18 @@ export function createStreamManager({ logger, config, icecast }) {
     const token = { cancelled: false, ytdlpProc: null };
 
     try {
-      await withTimeout((async () => {
-        const audioUrl = await extractAudioUrl(youtubeUrl, token);
-        if (token.cancelled) return; // timed out — do not spawn an encoder
-        ffmpegProc = spawnFfmpeg(audioUrl);
+      // Extraction can be slow (cookie-authenticated requests, VPS latency)
+      const audioUrl = await withTimeout(
+        extractAudioUrl(youtubeUrl, token),
+        EXTRACT_TIMEOUT,
+      );
+      if (token.cancelled) return; // timed out — do not spawn an encoder
 
-        // Wait until the Icecast mountpoint is actually active
-        const deadline = Date.now() + START_TIMEOUT;
+      ffmpegProc = spawnFfmpeg(audioUrl);
+
+      // Wait until the Icecast mountpoint is actually active
+      await withTimeout((async () => {
+        const deadline = Date.now() + MOUNTPOINT_TIMEOUT;
         while (Date.now() < deadline) {
           const s = await icecast.pollNow();
           if (s.mountpointActive) {
@@ -165,7 +171,7 @@ export function createStreamManager({ logger, config, icecast }) {
           await sleep(500);
         }
         throw new Error('mountpoint never became active');
-      })(), START_TIMEOUT);
+      })(), MOUNTPOINT_TIMEOUT);
     } catch (err) {
       token.cancelled = true;
       if (token.ytdlpProc) token.ytdlpProc.kill('SIGKILL');
