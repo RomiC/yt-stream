@@ -177,30 +177,45 @@ The only state is in-memory: current YouTube URL, stream state, listener count.
 
 ```yaml
 name: yt-stream
+
 services:
   icecast:
-    image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620   # pinned digest for reproducible builds
+    image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
+    platform: linux/amd64
     ports:
-      - "${ICECAST_PORT:-8000}:8000"
+      - "${ICECAST_PORT:-8871}:8000"
+    volumes:
+      - ./icecast.xml:/icecast.xml:ro
     environment:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
+    # Copy our config into the writable location first — the image entrypoint
+    # uses sed -i which cannot rename over a Docker bind-mounted file.
+    command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "256M"
 
   stream-service:
     build: .
+    image: yt-stream:latest
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-8870}:8080"
     volumes:
-      - ./cookies.txt:/app/cookies.txt   # optional
+      - stream-data:/app/data
+      - ./cookies.txt:/app/cookies.txt   # writable — yt-dlp refreshes cookies in place
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
-      ICECAST_PORT: "8000"
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      ICECAST_PORT: "${ICECAST_PORT:-8871}"  # public port for redirect URLs only
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
+      DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
       YTDLP_PROXY: "${YTDLP_PROXY:-}"
@@ -212,7 +227,10 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "1G"
+          memory: "1G"   # yt-dlp JS challenge solver needs ~170MB on top of app
+
+volumes:
+  stream-data:
 ```
 
 ---
