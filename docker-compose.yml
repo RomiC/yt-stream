@@ -1,0 +1,50 @@
+name: yt-stream
+
+services:
+  icecast:
+    image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
+    platform: linux/amd64
+    ports:
+      - "${ICECAST_PORT:-8871}:8000"
+    volumes:
+      - ./icecast.xml:/icecast.xml:ro
+    environment:
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
+    # Copy our config into the writable location first — the image entrypoint
+    # uses sed -i which cannot rename over a Docker bind-mounted file.
+    command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
+    restart: unless-stopped
+
+  stream-service:
+    build: .
+    image: yt-stream:latest
+    ports:
+      - "${PORT:-8870}:8080"
+    volumes:
+      - stream-data:/app/data
+      - ./cookies.txt:/app/cookies.txt:ro   # optional
+    environment:
+      PORT: "8080"
+      ICECAST_HOST: icecast
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      ICECAST_PORT: "${ICECAST_PORT:-8871}"  # public port for redirect URLs only
+      PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
+      DATA_DIR: /app/data
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
+      YTDLP_PROXY: "${YTDLP_PROXY:-}"
+      COOKIES_PATH: /app/cookies.txt
+    restart: unless-stopped
+    depends_on:
+      - icecast
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+
+volumes:
+  stream-data:
