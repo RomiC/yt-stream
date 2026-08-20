@@ -3,6 +3,7 @@ import config from './config.js';
 import { registerRoutes } from './routes.js';
 import { startPolling } from './icecast-client.js';
 import { createStreamManager } from './stream-manager.js';
+import { createProxyList } from './proxy-list.js';
 
 const app = Fastify({
   logger: {
@@ -10,8 +11,9 @@ const app = Fastify({
   },
 });
 
-const poller = startPolling(app.log);
-const streamManager = createStreamManager({ logger: app.log, config, icecast: poller });
+const icecast = startPolling(app.log);
+const proxyList = createProxyList({ config, logger: app.log });
+const streamManager = createStreamManager({ logger: app.log, config, icecast, proxyList });
 
 // Warn if running with default Icecast credentials
 if (config.icecast.sourcePassword === 'secret' || config.icecast.adminPassword === 'admin') {
@@ -20,9 +22,9 @@ if (config.icecast.sourcePassword === 'secret' || config.icecast.adminPassword =
 
 // Feed Icecast status into the stream manager every 15s
 setInterval(() => {
-  streamManager.checkHealth(poller.getStatus());
+  streamManager.checkHealth(icecast.getStatus());
 }, 15_000);
 
-await registerRoutes(app, poller, streamManager);
+await registerRoutes(app, icecast, streamManager, proxyList);
 
 await app.listen({ port: config.port, host: '0.0.0.0' });

@@ -1,5 +1,4 @@
 import { spawn } from 'child_process';
-import { stat } from 'fs/promises';
 import { EventEmitter } from 'events';
 
 const VALID_TRANSITIONS = {
@@ -9,15 +8,27 @@ const VALID_TRANSITIONS = {
   stopped: ['starting'],
 };
 
-const EXTRACT_TIMEOUT = 60_000;   // yt-dlp extraction can be slow (cookies, VPS latency)
-const MOUNTPOINT_TIMEOUT = 30_000; // ffmpeg connecting to YouTube + Icecast
+const MOUNTPOINT_TIMEOUT = 30_000; // streamlink open + ffmpeg connecting to Icecast
 
-export function createStreamManager({ logger, config, icecast }) {
+function redactProxy(proxy) {
+  try {
+    const u = new URL(proxy);
+    // Redact when either a username or a password is present (a password-only
+    // URL, e.g. http://:pass@host:port, has an empty username but must still
+    // be stripped before logging).
+    return u.username || u.password ? `${u.protocol}//${u.host}` : proxy;
+  } catch {
+    return proxy;
+  }
+}
+
+export function createStreamManager({ logger, config, icecast, proxyList }) {
   const emitter = new EventEmitter();
 
   let state = 'idle';
   let currentUrl = null;
   let ffmpegProc = null;
+  let streamlinkProc = null;
   let ffmpegStartedAt = null;
   let idleSince = null;
   let streamUptime = 0;
@@ -39,44 +50,24 @@ export function createStreamManager({ logger, config, icecast }) {
     emitter.emit('state', { state, youtube_url: currentUrl });
   }
 
-  async function extractAudioUrl(youtubeUrl, token) {
-    const args = [
-      '-f', 'best[height<=360]',
-      '--get-url',
-      // Use quickjs JS runtime — node OOMs under container memory limits
-      '--no-js-runtimes', '--js-runtimes', 'quickjs',
-    ];
-    if (config.ytdlpProxy) args.push('--proxy', config.ytdlpProxy);
-    if (config.cookiesPath) {
-      try {
-        const s = await stat(config.cookiesPath);
-        if (s.isFile()) args.push('--cookies', config.cookiesPath);
-      } catch { /* path doesn't exist, skip */ }
-    }
-    args.push(youtubeUrl);
-
-    return new Promise((resolve, reject) => {
-      const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      if (token) token.ytdlpProc = proc;
-      let stdout = '';
-      let stderr = '';
-      proc.stdout.on('data', d => stdout += d);
-      proc.stderr.on('data', d => stderr += d);
-      proc.on('close', code => {
-        if (code === 0) resolve(stdout.trim());
-        else reject(new Error(stderr.slice(-200) || `yt-dlp exit ${code}`));
-      });
-      proc.on('error', reject);
-    });
-  }
-
-  function spawnFfmpeg(audioUrl) {
+  /**
+   * Spawns streamlink (fetches YouTube live through a proxy, writes raw media
+   * to stdout) piped into ffmpeg (transcodes to MP3 and pushes to Icecast).
+   * ffmpeg reads from stdin, so it never touches YouTube's HLS directly.
+   */
+  function spawnPipeline(youtubeUrl, proxy) {
     const icecastUrl = `icecast://source:${config.icecast.sourcePassword}@${config.icecast.host}:${config.icecast.port}/stream`;
-    const args = [
-      '-reconnect', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5',
-      '-i', audioUrl,
+
+    const streamlinkArgs = [
+      '--default-stream', config.streamlinkQuality,
+      '--retry-open', '3',
+      '--output', '-',
+    ];
+    if (proxy) streamlinkArgs.push('--http-proxy', proxy);
+    streamlinkArgs.push(youtubeUrl);
+
+    const ffmpegArgs = [
+      '-i', '-',
       '-c:a', 'libmp3lame',
       '-b:a', '128k',
       '-content_type', 'audio/mpeg',
@@ -84,43 +75,63 @@ export function createStreamManager({ logger, config, icecast }) {
       icecastUrl,
     ];
 
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const slProc = spawn('streamlink', streamlinkArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // ffmpeg reads streamlink's output from its stdin, so stdin must be a pipe.
+    const ffProc = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'ignore', 'pipe'] });
 
-    proc.stderr.on('data', d => {
-      logger.debug({ ffmpeg: d.toString().trim() });
+    slProc.stdout.pipe(ffProc.stdin);
+    streamlinkProc = slProc;
+    ffmpegProc = ffProc;
+
+    let slErrTail = '';
+    slProc.stderr.on('data', d => {
+      const s = d.toString();
+      slErrTail = (slErrTail + s).slice(-2000);
+      logger.debug({ streamlink: s.trim() });
+    });
+    slProc.on('error', err => logger.error({ err: err.message }, 'streamlink spawn error'));
+    slProc.on('close', code => {
+      logger.warn({ code, pid: slProc.pid }, 'streamlink exited');
+      if (streamlinkProc === slProc) streamlinkProc = null;
     });
 
-    proc.on('close', code => {
-      logger.warn({ code, pid: proc.pid }, 'ffmpeg exited');
-      if (ffmpegProc === proc) {
+    ffProc.stderr.on('data', d => logger.debug({ ffmpeg: d.toString().trim() }));
+    ffProc.on('close', code => {
+      logger.warn({ code, pid: ffProc.pid }, 'ffmpeg exited');
+      if (ffmpegProc === ffProc) {
         ffmpegProc = null;
-        if (state === 'streaming') {
-          transition('stopped');
-        }
+        if (state === 'streaming') transition('stopped');
       }
     });
-
-    proc.on('error', err => {
+    ffProc.on('error', err => {
       logger.error({ err: err.message }, 'ffmpeg spawn error');
-      if (ffmpegProc === proc) {
+      if (ffmpegProc === ffProc) {
         ffmpegProc = null;
-        if (state === 'streaming') {
-          transition('stopped');
-        }
+        if (state === 'streaming') transition('stopped');
       }
     });
 
-    return proc;
+    return { ffProc, getError: () => slErrTail };
   }
 
-  function killFfmpeg() {
+  // SIGTERM, then SIGKILL if it hasn't exited within 5s.
+  function killProcess(proc) {
+    proc.kill('SIGTERM');
+    setTimeout(() => {
+      if (proc.exitCode === null) proc.kill('SIGKILL');
+    }, 5000);
+  }
+
+  function killPipeline() {
+    if (streamlinkProc) {
+      const p = streamlinkProc;
+      streamlinkProc = null;
+      killProcess(p);
+    }
     if (ffmpegProc) {
-      const proc = ffmpegProc;
+      const p = ffmpegProc;
       ffmpegProc = null;
-      proc.kill('SIGTERM');
-      setTimeout(() => {
-        if (proc.exitCode === null) proc.kill('SIGKILL');
-      }, 5000);
+      killProcess(p);
     }
   }
 
@@ -130,16 +141,26 @@ export function createStreamManager({ logger, config, icecast }) {
       return;
     }
 
-    // Stop current pipeline if running
+    // Stop current pipeline if running. sawInactive tracks whether we have
+    // observed the /stream mountpoint drop, so the readiness check below never
+    // mistakes a lingering OLD source for the newly spawned pipeline.
+    let sawInactive = true;
     if (state !== 'idle' && state !== 'stopped') {
-      killFfmpeg();
+      killPipeline();
+      sawInactive = false;
       // Wait for the old source to fully disconnect from Icecast so the
       // mountpoint is released before the new source tries to claim it.
       await withTimeout((async () => {
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
           const s = await icecast.pollNow();
-          if (!s.mountpointActive) return;
+          // Only a confirmed (reachable) poll showing the mount inactive
+          // counts as cleared — a failed poll reports mountpointActive=false
+          // even though the old source may still be connected.
+          if (s.icecastReachable && !s.mountpointActive) {
+            sawInactive = true;
+            return;
+          }
           await sleep(500);
         }
         logger.warn('old mountpoint still active after 10s, proceeding anyway');
@@ -150,38 +171,46 @@ export function createStreamManager({ logger, config, icecast }) {
     idleSince = null;
     transition('starting');
 
-    // Cancellation token: set when start times out so the still-running
-    // yt-dlp extraction can be killed and must not spawn an encoder.
-    const token = { cancelled: false, ytdlpProc: null };
+    // Pick one proxy from the user-provided list (if any) for this stream.
+    const proxies = await proxyList.listProxies();
+    const proxy = proxies.length > 0
+      ? proxies[Math.floor(Math.random() * proxies.length)]
+      : null;
+    logger.info({ proxy: proxy ? redactProxy(proxy) : null }, 'starting streamlink pipeline');
+
+    const pipeline = spawnPipeline(youtubeUrl, proxy);
 
     try {
-      // Extraction can be slow (cookie-authenticated requests, VPS latency)
-      const audioUrl = await withTimeout(
-        extractAudioUrl(youtubeUrl, token),
-        EXTRACT_TIMEOUT,
-      );
-      if (token.cancelled) return; // timed out — do not spawn an encoder
-
-      ffmpegProc = spawnFfmpeg(audioUrl);
-
-      // Wait until the Icecast mountpoint is actually active
+      // Wait until the Icecast mountpoint is actually active (streamlink
+      // opened the stream, ffmpeg is pushing audio).
       await withTimeout((async () => {
         const deadline = Date.now() + MOUNTPOINT_TIMEOUT;
         while (Date.now() < deadline) {
+          if (!ffmpegProc) {
+            throw new Error(
+              `pipeline exited before connecting to Icecast${pipeline.getError() ? `: ${pipeline.getError().split('\n').slice(-3).join(' | ')}` : ''}`,
+            );
+          }
           const s = await icecast.pollNow();
           if (s.mountpointActive) {
-            transition('streaming');
-            return;
+            // Only accept the mountpoint if we have seen it drop first —
+            // otherwise it may still be the previous source holding /stream.
+            if (sawInactive) {
+              transition('streaming');
+              return;
+            }
+          } else if (s.icecastReachable) {
+            // Confirmed inactive (not a failed poll) — the next active
+            // reading is our new source.
+            sawInactive = true;
           }
           await sleep(500);
         }
         throw new Error('mountpoint never became active');
       })(), MOUNTPOINT_TIMEOUT);
     } catch (err) {
-      token.cancelled = true;
-      if (token.ytdlpProc) token.ytdlpProc.kill('SIGKILL');
       logger.error({ err: err.message }, 'failed to start stream');
-      killFfmpeg();
+      killPipeline();
       transition('stopped');
       throw err;
     }
@@ -189,7 +218,7 @@ export function createStreamManager({ logger, config, icecast }) {
 
   async function stop() {
     if (state === 'idle' || state === 'stopped') return;
-    killFfmpeg();
+    killPipeline();
     transition('stopped');
   }
 
@@ -210,7 +239,7 @@ export function createStreamManager({ logger, config, icecast }) {
     // Source died but ffmpeg is still alive retrying input
     if (iceStatus.icecastReachable && !iceStatus.mountpointActive) {
       logger.warn('mountpoint lost while streaming — stopping');
-      killFfmpeg();
+      killPipeline();
       transition('stopped');
       return;
     }
@@ -222,7 +251,7 @@ export function createStreamManager({ logger, config, icecast }) {
       if (!idleSince) idleSince = Date.now();
       else if (Date.now() - idleSince >= config.streamTtlMinutes * 60_000) {
         logger.info({ ttlMinutes: config.streamTtlMinutes }, 'TTL expired, stopping stream');
-        killFfmpeg();
+        killPipeline();
         transition('stopped');
       }
     } else {

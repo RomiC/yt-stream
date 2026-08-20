@@ -29,7 +29,7 @@ services:
       - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
-      - ./cookies.txt:/app/cookies.txt   # writable — yt-dlp refreshes cookies in place
+      - ./proxy.json:/app/proxy.json:ro   # user-provided proxy list for streamlink
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
@@ -40,8 +40,8 @@ services:
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
-      YTDLP_PROXY: "${YTDLP_PROXY:-}"
-      COOKIES_PATH: /app/cookies.txt
+      PROXY_FILE: "${PROXY_FILE:-}"
+      STREAMLINK_QUALITY: "${STREAMLINK_QUALITY:-audio_only,worst}"
     restart: unless-stopped
     depends_on:
       - icecast
@@ -49,7 +49,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "1G"   # yt-dlp JS challenge solver needs ~170MB on top of app
+          memory: "256M"   # streamlink + ffmpeg + node
 
 volumes:
   stream-data:

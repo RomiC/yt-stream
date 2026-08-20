@@ -1,8 +1,6 @@
 # Implementation Plan
 
-> **Note:** The final implementation was simplified from this plan:
-> retries, persistence, and startup resume were removed. See DESIGN.md
-> for the current architecture.
+> **Note:** The final implementation was simplified from this plan: retries, persistence, and startup resume were removed. See DESIGN.md for the current architecture. **2026-08 update:** the streaming pipeline no longer uses `yt-dlp`. The live stream is now fetched by **streamlink** (optionally through a rotating proxy from `proxy.json`) and piped into ffmpeg, which only transcodes to MP3 and pushes to Icecast. Sections below referencing yt-dlp/cookies are historical.
 
 ## Architecture Overview (historical)
 
@@ -48,15 +46,14 @@ HTTP request → routes.js → stream-manager.js → spawn ffmpeg → Icecast
 
 ## Dependency Pinning Policy
 
-All dependencies — npm packages, Docker base images, Docker service images, and
-system packages — must be pinned to exact versions for reproducible builds.
+All dependencies — npm packages, Docker base images, Docker service images, and system packages — must be pinned to exact versions for reproducible builds.
 
-| Layer | What | How | Update cadence |
-|-------|------|-----|---------------|
-| **npm** | `fastify` | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Manual review with `npm outdated` |
-| **Docker base image** | `node:24-alpine` | Pinned by digest: `node:24-alpine@sha256:d32cdf...` | Update when bumping Node or Alpine |
-| **Docker service image** | `moul/icecast` | Pinned by digest: `moul/icecast@sha256:b35cd6...` | Update when bumping Icecast |
-| **apk packages** | `ffmpeg`, `yt-dlp` | Exact version: `ffmpeg=8.1.2-r0`, `yt-dlp=2026.07.04-r0` | Update when bumping any package |
+| Layer                    | What                   | How                                                                                                               | Update cadence                     |
+| ------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **npm**                  | `fastify`              | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Manual review with `npm outdated`  |
+| **Docker base image**    | `node:24-alpine`       | Pinned by digest: `node:24-alpine@sha256:d32cdf...`                                                               | Update when bumping Node or Alpine |
+| **Docker service image** | `moul/icecast`         | Pinned by digest: `moul/icecast@sha256:b35cd6...`                                                                 | Update when bumping Icecast        |
+| **apk packages**         | `ffmpeg`, `streamlink` | Exact version: `ffmpeg=8.1.2-r0`, `streamlink=8.4.0-r0`                                                           | Update when bumping any package    |
 
 **Commands for resolving digests and versions:**
 
@@ -75,10 +72,7 @@ docker run --rm node:24-alpine apk info -a ffmpeg yt-dlp curl
 npm ci  # enforces package-lock.json hashes
 ```
 
-**Rationale:** Without pinning, a rebuild 6 months later can pull a new minor/patch
-of a dependency that introduces a breaking change, security regression, or behavior
-shift. Digests protect against tag mutation; exact versions protect against semver
-surprises.
+**Rationale:** Without pinning, a rebuild 6 months later can pull a new minor/patch of a dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
 
 ---
 
@@ -113,8 +107,7 @@ surprises.
 }
 ```
 
-> **Update policy:** Check for newer versions with `npm outdated` before bumping.
-> Record the resolved URL + SHA-512 in `package-lock.json` (committed to repo).
+> **Update policy:** Check for newer versions with `npm outdated` before bumping. Record the resolved URL + SHA-512 in `package-lock.json` (committed to repo).
 
 **Dockerfile** — base image pinned by digest, system packages pinned by version:
 
@@ -140,17 +133,7 @@ EXPOSE 8080
 CMD ["node", "src/index.js"]
 ```
 
-> **Digest retrieval:**
-> ```bash
-> docker pull node:24-alpine && docker inspect node:24-alpine --format='{{index .RepoDigests 0}}'
-> ```
->
-> **Package version lookup:**
-> ```bash
-> docker run --rm node:24-alpine apk info -a ffmpeg yt-dlp curl
-> ```
->
-> Replace `<digest>` and version strings with the actual values resolved at build time.
+> **Digest retrieval:** `bash docker pull node:24-alpine && docker inspect node:24-alpine --format='{{index .RepoDigests 0}}' ` **Package version lookup:** `bash docker run --rm node:24-alpine apk info -a ffmpeg yt-dlp curl ` Replace `<digest>` and version strings with the actual values resolved at build time.
 
 **docker-compose.yml** — Icecast image pinned by digest:
 
@@ -159,12 +142,7 @@ CMD ["node", "src/index.js"]
 image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
 ```
 
-> Retrieve with:
-> ```bash
-> docker pull moul/icecast && docker inspect moul/icecast --format='{{index .RepoDigests 0}}'
-> ```
->
-> The rest of docker-compose.yml is copied verbatim from DESIGN.md.
+> Retrieve with: `bash docker pull moul/icecast && docker inspect moul/icecast --format='{{index .RepoDigests 0}}' ` The rest of docker-compose.yml is copied verbatim from DESIGN.md.
 
 **Acceptance:** `docker compose up` starts both containers. Fastify boots and logs to stdout.
 
@@ -287,11 +265,8 @@ export function startPolling(logger) {
 
 **Key decisions:**
 
-- XML parsing: use a lightweight approach. Icecast `/admin/listmounts` XML is simple
-  enough for a regex or `DOMParser` (available in Node 24 via `jsdom`? No — Node
-  doesn't have native DOMParser). Options:
-  - **Recommendation:** Use `fast-xml-parser` (small, zero-dep) or write a minimal
-    regex-based parser since the XML structure is predictable.
+- XML parsing: use a lightweight approach. Icecast `/admin/listmounts` XML is simple enough for a regex or `DOMParser` (available in Node 24 via `jsdom`? No — Node doesn't have native DOMParser). Options:
+- **Recommendation:** Use `fast-xml-parser` (small, zero-dep) or write a minimal regex-based parser since the XML structure is predictable.
 - The polling function takes a `logger` reference so it can log errors/warnings.
 - `getStatus()` returns a shallow copy to prevent mutation.
 
@@ -432,8 +407,7 @@ Four routes as specified:
 
 - Use Fastify schema validation for query params (`url` must be present, non-empty string).
 - `302` redirects via `reply.redirect(streamUrl)`.
-- `GET /stream` (without `url`) and `GET /stream?url=...` are the same path — route handler
-  checks `request.query.url` presence to distinguish.
+- `GET /stream` (without `url`) and `GET /stream?url=...` are the same path — route handler checks `request.query.url` presence to distinguish.
 
 ```js
 app.get("/stream", async (request, reply) => {
@@ -508,8 +482,7 @@ function onPollResult({ listeners }) {
 }
 ```
 
-Integration: `stream-manager.js` receives poll results via a callback or the icecast
-client's `getStatus()` called on the same 15s interval.
+Integration: `stream-manager.js` receives poll results via a callback or the icecast client's `getStatus()` called on the same 15s interval.
 
 **TTL=0 behavior:** If `STREAM_TTL_MINUTES=0`, auto-stop is disabled (never stops based on idle).
 
@@ -589,10 +562,7 @@ export function createHealth(streamManager, icecastClient) {
 | 9    | `health.js`                                                      | Steps 4, 5 | Small            |
 | 10   | Integration & smoke test                                         | All        | Medium           |
 
-Steps 1–3 produce a running (but useless) service.  
-Steps 4–6 produce a working single-stream service.  
-Steps 7–9 add resilience and monitoring.  
-Step 10 validates everything end-to-end.
+Steps 1–3 produce a running (but useless) service. Steps 4–6 produce a working single-stream service. Steps 7–9 add resilience and monitoring. Step 10 validates everything end-to-end.
 
 ---
 

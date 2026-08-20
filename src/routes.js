@@ -1,16 +1,19 @@
 import config from './config.js';
 
-export async function registerRoutes(app, poller, streamManager) {
+export async function registerRoutes(app, icecast, streamManager, proxyList) {
   // --- GET /health -----------------------------------------------------------
 
   app.get('/health', async (request, reply) => {
-    const ice = poller.getStatus();
+    const ice = icecast.getStatus();
     const stream = streamManager.getState();
 
     const components = {
       icecast: ice.icecastReachable
         ? { status: 'reachable', mountpoint_active: ice.mountpointActive }
         : { status: 'unreachable', error: 'no response from Icecast admin API' },
+      proxy_list: (await proxyList.isReady())
+        ? { status: 'ready' }
+        : { status: 'unavailable' },
     };
 
     if (stream.state !== 'idle') {

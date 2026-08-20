@@ -2,12 +2,9 @@
 
 ## Overview
 
-A self-hosted Node.js service that converts a YouTube live stream or video into an
-Icecast-compatible MP3 audio stream. The user makes a single `GET` request with a
-YouTube URL and is redirected to an Icecast mountpoint playable by any radio receiver.
+A self-hosted Node.js service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. The user makes a single `GET` request with a YouTube URL and is redirected to an Icecast mountpoint playable by any radio receiver.
 
-The PoC manages exactly **one stream at a time** — starting a new YouTube URL
-replaces the current one.
+The PoC manages exactly **one stream at a time** — starting a new YouTube URL replaces the current one.
 
 ```
 GET /stream?url=https://youtube.com/watch?v=...
@@ -16,17 +13,17 @@ GET /stream?url=https://youtube.com/watch?v=...
   ┌──────────────────────────────────────────────────────────────┐
   │                    STREAM SERVICE (Node.js)                  │
   │                                                              │
-  │  ┌──────────┐    ┌───────────────┐    ┌──────────┐          │
-  │  │ REST API │───▶│ Stream Manager│───▶│ yt-dlp + │          │
-  │  │(Fastify) │    │ (lifecycle)   │    │ ffmpeg   │          │
-  │  └────┬─────┘    └───────────────┘    └─────┬────┘          │
-  │       │                                     │               │
-  │       │  302 redirect                       ▼               │
-  │       └──────────────────────────▶┌───────────────┐         │
-  │                                   │    Icecast    │         │
-  │                                   │  /stream      │         │
-  │                                   │  audio/mpeg   │         │
-  │                                   └───────────────┘         │
+  │  ┌──────────┐    ┌───────────────┐    ┌────────────┐         │
+  │  │ REST API │───▶│ Stream Manager│───▶│ streamlink │         │
+  │  │(Fastify) │    │ (lifecycle)   │    │ ffmpeg     │         │
+  │  └────┬─────┘    └───────────────┘    └─────┬──────┘         │
+  │       │                                     │                │
+  │       │  302 redirect                       ▼                │
+  │       └──────────────────────────▶┌───────────────┐          │
+  │                                   │    Icecast    │          │
+  │                                   │  /stream      │          │
+  │                                   │  audio/mpeg   │          │
+  │                                   └───────────────┘          │
   └──────────────────────────────────────────────────────────────┘
        │
        ▼
@@ -60,18 +57,11 @@ Start streaming a YouTube URL and redirect to the Icecast mountpoint.
 
 **Responses:**
 
-- **`302 Found`** — pipeline is streaming. `Location` header points to:
-  ```
-  http://${PUBLIC_HOSTNAME}:${ICECAST_PORT}/stream
-  ```
+- **`302 Found`** — pipeline is streaming. `Location` header points to: `http://${PUBLIC_HOSTNAME}:${ICECAST_PORT}/stream`
 
 - **`400 Bad Request`** — missing or invalid `url` parameter.
 
-- **`500 Internal Server Error`** — pipeline failed to start (yt-dlp error, Icecast
-  unreachable, or 15s timeout).
-    ```json
-    { "error": "Failed to start stream", "details": "..." }
-    ```
+- **`500 Internal Server Error`** — pipeline failed to start (streamlink error, Icecast unreachable, or 15s timeout). `json { "error": "Failed to start stream", "details": "..." } `
 
 ---
 
@@ -83,56 +73,29 @@ Return the current stream status **without** starting or stopping anything.
 
 - **`200 OK`** — stream exists:
 
-  ```json
-  {
-    "state": "streaming",
-    "stream_url": "http://host:8000/stream",
-    "youtube_url": "https://youtube.com/watch?v=...",
-    "listeners": 3,
-    "uptime_seconds": 1842,
-    "idle_seconds": 0,
-    "bitrate": 128
-  }
-  ```
+`json { "state": "streaming", "stream_url": "http://host:8000/stream", "youtube_url": "https://youtube.com/watch?v=...", "listeners": 3, "uptime_seconds": 1842, "idle_seconds": 0, "bitrate": 128 } `
 
-- **`200 OK`** — no active stream:
-  ```json
-  {
-    "state": "idle"
-  }
-  ```
+- **`200 OK`** — no active stream: `json { "state": "idle" } `
 
 ---
 
 ### `DELETE /stream`
 
-Stop the current stream immediately. Kills the ffmpeg process, disconnects from
-Icecast, and transitions to `stopped` state.
+Stop the current stream immediately. Kills the ffmpeg process, disconnects from Icecast, and transitions to `stopped` state.
 
 **Responses:**
 
 - **`200 OK`** — stream stopped:
 
-  ```json
-  {
-    "state": "stopped",
-    "youtube_url": "https://youtube.com/watch?v=..."
-  }
-  ```
+`json { "state": "stopped", "youtube_url": "https://youtube.com/watch?v=..." } `
 
-- **`404 Not Found`** — no stream was running:
-  ```json
-  {
-    "error": "No active stream"
-  }
-  ```
+- **`404 Not Found`** — no stream was running: `json { "error": "No active stream" } `
 
 ---
 
 ### `GET /health`
 
-Health check for container orchestration and debugging. Returns state of internal
-components.
+Health check for container orchestration and debugging. Returns state of internal components.
 
 **Response `200 OK`:**
 
@@ -148,6 +111,9 @@ components.
     "icecast": {
       "status": "reachable",
       "mountpoint_active": true
+    },
+    "proxy_list": {
+      "status": "ready"
     }
   },
   "stream": {
@@ -158,7 +124,7 @@ components.
 }
 ```
 
-When no stream is running, `ffmpeg` and `stream` are omitted:
+When no stream is running, `ffmpeg` and `stream` are omitted. A `proxy_list` component is always reported (`ready` when the proxy list is readable, `unavailable` when it is missing or invalid):
 
 ```json
 {
@@ -166,6 +132,9 @@ When no stream is running, `ffmpeg` and `stream` are omitted:
   "components": {
     "icecast": {
       "status": "reachable"
+    },
+    "proxy_list": {
+      "status": "ready"
     }
   }
 }
@@ -197,13 +166,13 @@ When no stream is running, `ffmpeg` and `stream` are omitted:
                        │
                        ▼
                  ┌──────────┐
-                 │ STARTING │  yt-dlp extracting, ffmpeg connecting
+                 │ STARTING │  streamlink opening, ffmpeg connecting
                  └────┬─────┘
                       │
               ┌───────┴────────┐
               ▼                ▼
         ┌──────────┐    ┌──────────┐
-        │STREAMING │    │ STOPPED  │  yt-dlp/ffmpeg failure or 15s timeout
+        │STREAMING │    │ STOPPED  │  streamlink/ffmpeg failure or 15s timeout
         └────┬─────┘    └──────────┘
              │               ▲
     DELETE   │               │
@@ -220,42 +189,43 @@ When no stream is running, `ffmpeg` and `stream` are omitted:
 
 | From        | Trigger                     | To          | Notes                                                        |
 | ----------- | --------------------------- | ----------- | ------------------------------------------------------------ |
-| `IDLE`      | `GET /stream?url=...`       | `STARTING`  | Spawn yt-dlp + ffmpeg                                        |
+| `IDLE`      | `GET /stream?url=...`       | `STARTING`  | Spawn streamlink + ffmpeg                                    |
 | `STARTING`  | ffmpeg connects to Icecast  | `STREAMING` | Pipeline healthy, audio flowing                              |
-| `STARTING`  | yt-dlp or ffmpeg fails      | `STOPPED`   | Request returns 500                                           |
-| `STREAMING` | ffmpeg exits unexpectedly   | `STOPPED`   | No retry — client sends another request to restart            |
+| `STARTING`  | streamlink or ffmpeg fails  | `STOPPED`   | Request returns 500                                          |
+| `STREAMING` | ffmpeg exits unexpectedly   | `STOPPED`   | No retry — client sends another request to restart           |
 | `STREAMING` | `DELETE /stream`            | `STOPPED`   | Manual stop, kill ffmpeg via SIGTERM (then SIGKILL after 5s) |
-| `STREAMING` | `GET /stream?url=<new>`     | `STARTING`  | Kill current pipeline, start new one                          |
-| `STARTING`  | `GET /stream?url=<new>`     | `STARTING`  | Kill current startup, start new one                           |
+| `STREAMING` | `GET /stream?url=<new>`     | `STARTING`  | Kill current pipeline, start new one                         |
+| `STARTING`  | `GET /stream?url=<new>`     | `STARTING`  | Kill current startup, start new one                          |
 | `STREAMING` | 0 listeners for TTL minutes | `STOPPED`   | Auto-stop to save resources (TTL defaults to 15 min)         |
-| `STOPPED`   | `GET /stream?url=...`       | `STARTING`  | Start fresh                                                     |
-| any         | `GET /stream?url=<same>`    | no change   | Idempotent — redirect if streaming, wait if starting             |
+| `STOPPED`   | `GET /stream?url=...`       | `STARTING`  | Start fresh                                                  |
+| any         | `GET /stream?url=<same>`    | no change   | Idempotent — redirect if streaming, wait if starting         |
 
 ## Pipeline
 
-### Extraction
+### Fetching (streamlink)
 
 ```bash
-yt-dlp -f bestaudio --get-url "<youtube_url>"
+streamlink --http-proxy <proxy> --default-stream audio_only,worst -o - "<youtube_url>"
 ```
 
-- `-f bestaudio` selects the highest-bitrate audio-only stream (typically Opus in WebM
-  or AAC in MP4 — 128–160 kbps).
-- Returns a direct stream URL valid for ~6 hours (YouTube expires signed URLs).
-- On HTTP 403 from ffmpeg mid-stream, yt-dlp re-run to get a fresh URL (handled by the
-  retry mechanism).
+- `streamlink` opens the YouTube live stream with its own HLS client, which keeps up with YouTube's 30-second live window (bare ffmpeg's HLS demuxer falls behind and requests expired segments → 403).
+- `audio_only,worst` picks an audio-only stream when the plugin exposes one, otherwise the smallest combined stream (144p) — only the audio is used.
+- `--http-proxy` is added only when a proxy list is provided (`proxy.json`).
+- Media is written to stdout and piped into ffmpeg; no intermediate URL is extracted.
 
 ### Transcoding & Streaming to Icecast
 
 ```bash
 ffmpeg \
-  -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-  -i "<extracted_audio_url>" \
+  -i - \
   -c:a libmp3lame -b:a 128k \
   -content_type audio/mpeg \
   -f mp3 \
   icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/stream
 ```
+
+- ffmpeg reads streamlink's output from **stdin** (`-i -`) and never connects to YouTube directly.
+- The output stream stays connected to Icecast as long as streamlink delivers audio.
 
 | Parameter                  | Purpose                                 |
 | -------------------------- | --------------------------------------- |
@@ -274,8 +244,7 @@ ffmpeg \
 
 ### Resource Limits
 
-ffmpeg audio-only transcoding to MP3 128k is lightweight. The following Docker limits
-are sufficient (set in `docker-compose.yml`):
+ffmpeg audio-only transcoding to MP3 128k is lightweight. The following Docker limits are sufficient (set in `docker-compose.yml`):
 
 | Resource | Limit    | Notes                         |
 | -------- | -------- | ----------------------------- |
@@ -304,15 +273,12 @@ No mountpoint management or dynamic creation needed.
 
 ### Admin API Usage
 
-The service polls `GET http://icecast:${ICECAST_PORT}/admin/listmounts` (HTTP Basic Auth
-with `admin:${ICECAST_ADMIN_PASSWORD}`) every **15 seconds** to:
+The service polls `GET http://icecast:${ICECAST_PORT}/admin/listmounts` (HTTP Basic Auth with `admin:${ICECAST_ADMIN_PASSWORD}`) every **15 seconds** to:
 
 - Verify the mountpoint is active
 - Count current listeners
 - Feed listener count into `GET /stream` and `GET /health` responses
-- **TTL auto-stop**: when `listeners == 0` continuously for `STREAM_TTL_MINUTES`
-  (default 15), kill the ffmpeg process and transition to `STOPPED`. An active
-  listener that connects resets the idle timer.
+- **TTL auto-stop**: when `listeners == 0` continuously for `STREAM_TTL_MINUTES` (default 15), kill the ffmpeg process and transition to `STOPPED`. An active listener that connects resets the idle timer.
 
 ---
 
@@ -320,43 +286,39 @@ with `admin:${ICECAST_ADMIN_PASSWORD}`) every **15 seconds** to:
 
 ### Stream Service
 
-| Variable                  | Default     | Description                                              |
-| ------------------------- | ----------- | -------------------------------------------------------- |
-| `PORT`                    | `8080`      | API server listen port                                   |
-| `ICECAST_HOST`            | `icecast`   | Icecast server hostname (Docker service name by default) |
+| Variable                  | Default     | Description                                                 |
+| ------------------------- | ----------- | ----------------------------------------------------------- |
+| `PORT`                    | `8080`      | API server listen port                                      |
+| `ICECAST_HOST`            | `icecast`   | Icecast server hostname (Docker service name by default)    |
 | `ICECAST_PORT`            | `8000`      | Public facing port for redirect URLs (internal always 8000) |
-| `ICECAST_SOURCE_PASSWORD` | `secret`    | Source password for ffmpeg → Icecast                     |
-| `ICECAST_ADMIN_PASSWORD`  | `admin`     | Admin password for polling Icecast API                   |
-| `PUBLIC_HOSTNAME`         | `localhost` | Public hostname used in `302` redirect URLs              |
-| `STREAM_TTL_MINUTES`      | `15`        | Auto-stop after N minutes with zero listeners            |
+| `ICECAST_SOURCE_PASSWORD` | `secret`    | Source password for ffmpeg → Icecast                        |
+| `ICECAST_ADMIN_PASSWORD`  | `admin`     | Admin password for polling Icecast API                      |
+| `PUBLIC_HOSTNAME`         | `localhost` | Public hostname used in `302` redirect URLs                 |
+| `STREAM_TTL_MINUTES`      | `15`        | Auto-stop after N minutes with zero listeners               |
 
 ### Route Isolation
 
-Only the four routes listed in the API specification are registered on the service's
-HTTP port (`8080`):
+Only the four routes listed in the API specification are registered on the service's HTTP port (`8080`):
 
 - `GET /stream?url=...`
 - `GET /stream`
 - `DELETE /stream`
 - `GET /health`
 
-No Icecast admin endpoints, internal mountpoints, or any other URLs are proxied or
-exposed. The Icecast port (`8000`) serves audio directly to clients; the API server
-is a separate management interface only.
+No Icecast admin endpoints, internal mountpoints, or any other URLs are proxied or exposed. The Icecast port (`8000`) serves audio directly to clients; the API server is a separate management interface only.
 
 ### Optional (PoC scope — env var wired but not required)
 
-| Variable       | Default         | Description                                   |
-| -------------- | --------------- | --------------------------------------------- |
-| `YTDLP_PROXY`  | _(none)_        | Proxy URL for yt-dlp (`--proxy` flag)         |
-| `COOKIES_PATH` | `./cookies.txt` | Path to cookies file for yt-dlp (`--cookies`) |
+| Variable             | Default            | Description                                                                                                                                  |
+| -------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROXY_FILE`         | _(none)_           | Path to a user-provided proxy list (JSON array of proxy URL strings); only read when explicitly set — otherwise streamlink connects directly |
+| `STREAMLINK_QUALITY` | `audio_only,worst` | streamlink stream priority list                                                                                                              |
 
 ---
 
 ## Logging
 
-JSON structured logs to stdout (compatible with Docker log drivers, `jq`, log
-aggregators).
+JSON structured logs to stdout (compatible with Docker log drivers, `jq`, log aggregators).
 
 **Format (one JSON object per line):**
 
@@ -371,11 +333,9 @@ aggregators).
 - `info` — lifecycle events (stream started, stopped, retrying, listener count changes)
 - `warn` — recoverable issues (ffmpeg exit → retrying, Icecast poll timeout)
 - `error` — non-recoverable issues (max retries exhausted, API errors)
-- `debug` — per-request details, Icecast poll responses, raw yt-dlp output (only when
-  `LOG_LEVEL=debug`)
+- `debug` — per-request details, Icecast poll responses, streamlink/ffmpeg output (only when `LOG_LEVEL=debug`)
 
-**Implementation:** Fastify's default logger (pino) with `pino-pretty`
-disabled — pure JSON output to stdout.
+**Implementation:** Fastify's default logger (pino) with `pino-pretty` disabled — pure JSON output to stdout.
 
 ---
 
@@ -405,18 +365,18 @@ All error responses follow a consistent shape:
 
 ## Tech Stack
 
-| Layer          | Choice                | Version  | Rationale                                  |
-| -------------- | --------------------- | -------- | ------------------------------------------ |
-| Runtime        | Node.js               | ≥ 24 LTS | Async I/O, native fetch, stable standard library    |
-| HTTP framework | Fastify               | latest stable | Fast, schema-based, pino logger bundled          |
-| Logging        | pino (bundled with Fastify) | —    | Zero-config JSON logging to stdout                  |
-| HTTP client    | built-in              | —        | `fetch()` (Node 20+) for Icecast admin API |
-| Process mgmt   | `child_process.spawn` | —        | Spawn yt-dlp and ffmpeg                    |
-| Stream extract | yt-dlp                | latest   | Only tool that reliably handles YouTube    |
-| Transcoder     | ffmpeg                | ≥ 5      | Audio transcoding to MP3                   |
-| Stream server  | Icecast               | 2.4      | Industry-standard, ICY metadata, fan-out   |
-| State store    | JSON file             | —        | Single-stream PoC, SQLite overkill         |
-| Container      | Docker + Compose      | —        | Images pinned by digest, one-command deploy |
+| Layer          | Choice                      | Version       | Rationale                                        |
+| -------------- | --------------------------- | ------------- | ------------------------------------------------ |
+| Runtime        | Node.js                     | ≥ 24 LTS      | Async I/O, native fetch, stable standard library |
+| HTTP framework | Fastify                     | latest stable | Fast, schema-based, pino logger bundled          |
+| Logging        | pino (bundled with Fastify) | —             | Zero-config JSON logging to stdout               |
+| HTTP client    | built-in                    | —             | `fetch()` (Node 20+) for Icecast admin API       |
+| Process mgmt   | `child_process.spawn`       | —             | Spawn streamlink and ffmpeg                      |
+| Stream extract | streamlink                  | 8.4.0         | Robust HLS client for YouTube live               |
+| Transcoder     | ffmpeg                      | ≥ 5           | Audio transcoding to MP3                         |
+| Stream server  | Icecast                     | 2.4           | Industry-standard, ICY metadata, fan-out         |
+| State store    | JSON file                   | —             | Single-stream PoC, SQLite overkill               |
+| Container      | Docker + Compose            | —             | Images pinned by digest, one-command deploy      |
 
 **No external dependencies beyond:**
 
@@ -460,19 +420,19 @@ services:
       - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
-      - ./cookies.txt:/app/cookies.txt   # writable — yt-dlp refreshes cookies in place
+      - ./proxy.json:/app/proxy.json:ro # user-provided proxy list for streamlink
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_PORT: "${ICECAST_PORT:-8871}"  # public port for redirect URLs only
+      ICECAST_PORT: "${ICECAST_PORT:-8871}" # public port for redirect URLs only
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
-      YTDLP_PROXY: "${YTDLP_PROXY:-}"
-      COOKIES_PATH: /app/cookies.txt
+      PROXY_FILE: "${PROXY_FILE:-}"
+      STREAMLINK_QUALITY: "${STREAMLINK_QUALITY:-audio_only,worst}"
     restart: unless-stopped
     depends_on:
       - icecast
@@ -480,7 +440,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "1G"   # yt-dlp JS challenge solver needs ~170MB on top of app
+          memory: "256M" # streamlink + ffmpeg + node
 
 volumes:
   stream-data:
@@ -494,11 +454,12 @@ volumes:
 yt-stream/
 ├── src/
 │   ├── index.js            # Entry point, Fastify app setup, routes
-│   ├── stream-manager.js   # Core logic: lifecycle, pipeline, TTL
+│   ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL
+│   ├── proxy-list.js       # Reads proxy.json and returns the proxy list
 │   ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status)
 │   ├── routes.js           # HTTP route handlers
 │   └── config.js           # Environment variable loading
-├── cookies.txt             # Optional YouTube cookies for restricted videos
+├── proxy.json              # User-provided proxy list (JSON array of URL strings)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── package.json
@@ -521,26 +482,19 @@ yt-stream/
 
 ## Acceptance Criteria
 
-1. **`GET /stream?url=<valid_youtube_url>`** → returns `302` redirect to Icecast
-   mountpoint. Audio is playable in VLC, browser, or any Icecast-compatible client.
+1. **`GET /stream?url=<valid_youtube_url>`** → returns `302` redirect to Icecast mountpoint. Audio is playable in VLC, browser, or any Icecast-compatible client.
 
-2. **`GET /stream`** → returns current state as JSON. `idle` when nothing is running,
-   `streaming` with metadata when active.
+2. **`GET /stream`** → returns current state as JSON. `idle` when nothing is running, `streaming` with metadata when active.
 
-3. **`DELETE /stream`** → stops the ffmpeg process, mountpoint goes silent, state
-   transitions to `stopped`.
+3. **`DELETE /stream`** → stops the ffmpeg process, mountpoint goes silent, state transitions to `stopped`.
 
-4. **`GET /health`** → returns `200` with component statuses when healthy, `503` when
-   Icecast is unreachable.
+4. **`GET /health`** → returns `200` with component statuses when healthy, `503` when Icecast is unreachable.
 
-5. **Re-POST with a different URL** while streaming → old pipeline is killed, new one
-   starts, redirect points to new stream.
+5. **Re-POST with a different URL** while streaming → old pipeline is killed, new one starts, redirect points to new stream.
 
-6. **Re-POST with the same URL** while streaming → idempotent, immediate `302` redirect
-   (no pipeline restart).
+6. **Re-POST with the same URL** while streaming → idempotent, immediate `302` redirect (no pipeline restart).
 
-7. **ffmpeg crashes mid-stream** → automatic retry with exponential backoff, transparent
-   to clients (brief silence then audio resumes).
+7. **ffmpeg crashes mid-stream** → automatic retry with exponential backoff, transparent to clients (brief silence then audio resumes).
 
 8. **Service restart** → automatically resumes last stream if it was active.
 
@@ -548,7 +502,6 @@ yt-stream/
 
 10. **Zero listeners for TTL duration** → ffmpeg is killed, state becomes `stopped`, resources freed.
 
-12. **Only advertised routes exposed** — no Icecast admin API, mountpoints, or
-    internal endpoints leak through the service's HTTP port (8080).
+11. **Only advertised routes exposed** — no Icecast admin API, mountpoints, or internal endpoints leak through the service's HTTP port (8080).
 
-13. **Single `docker compose up`** brings up Icecast + stream-service, fully functional.
+12. **Single `docker compose up`** brings up Icecast + stream-service, fully functional.
