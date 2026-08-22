@@ -29,6 +29,12 @@ build/
 data/
 *.log
 
+# Generated proxy list (may contain credentials)
+proxy.json
+
+# Pi agent local state
+.pi/
+
 # Coverage
 coverage/
 .nyc_output/

@@ -8,11 +8,10 @@ const config = Object.freeze({
     publicPort: parseInt(process.env.ICECAST_PORT || '8000', 10), // host-facing port for redirects
   }),
   publicHostname: process.env.PUBLIC_HOSTNAME || 'localhost',
-  dataDir: process.env.DATA_DIR || './data',
   logLevel: process.env.LOG_LEVEL || 'info',
   streamTtlMinutes: parseInt(process.env.STREAM_TTL_MINUTES || '15', 10),
-  ytdlpProxy: process.env.YTDLP_PROXY || null,
-  cookiesPath: process.env.COOKIES_PATH || null,
+  proxyFile: process.env.PROXY_FILE || null,
+  streamlinkQuality: process.env.STREAMLINK_QUALITY || 'audio_only,worst',
 });
 
 export default config;
