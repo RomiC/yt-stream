@@ -22,7 +22,6 @@ The API moves under an `/api/` prefix to avoid collision with the `/stream` audi
 | Method   | Path                  | Auth | Purpose                                       |
 | -------- | --------------------- | ---- | --------------------------------------------- |
 | `GET`    | `/api/stream?url=...` | ✅   | Start a stream; `302` redirect to audio mount |
-| `GET`    | `/api/stream`         | ✅   | Current stream status (JSON)                  |
 | `DELETE` | `/api/stream`         | ✅   | Stop the current stream                       |
 | `GET`    | `/api/health`         | ✅   | Component health (JSON)                       |
 | `GET`    | `/stream`             | —    | Audio mount (Icecast, public)                 |
@@ -32,13 +31,13 @@ The API moves under an `/api/` prefix to avoid collision with the `/stream` audi
 ```
 GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
   → 302 Location: /stream            (audio mount, no key needed)
-  → 400 empty/invalid url
+  → 400 missing/invalid url
   → 401 missing/invalid key
   → 429 a stream operation is already in progress
   → 500 extraction/transcode/icecast failure
 ```
 
-**Status vs start distinction:** `GET /api/stream` **without** a `url` query parameter returns the current status (`200`). The `400` applies only when a `url` is present but empty or invalid.
+**Status:** served by `/api/health` (which includes the current stream state); `GET /api/stream` without a `url` returns `400` — the endpoint is start-only.
 
 **Concurrency:** one in-flight operation at a time. The route holds a `requestInProgress` flag; concurrent start/delete requests are dropped with `429`.
 
@@ -74,7 +73,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 ### 3.3 Listener limit
 
 - `ICECAST_MAX_LISTENERS` env var, **default 2**.
-- Enforced in Icecast (`<max-listeners>` per mount) and again in the app using the existing listener polling (defense in depth).
+- Enforced in Icecast (`<max-listeners>` per mount) and again in the app — Stream's TTL watcher polls the listener count and stops on a violation (defense in depth).
 
 ### 3.4 HTTPS
 
@@ -103,15 +102,20 @@ Replace the monolithic `stream-manager.js` with focused modules:
 
 ```
 src/
-├── events.js       # event bus (pub/sub)
-├── yt-dlp.js       # audio URL extraction
-├── ffmpeg.js       # transcode, kill, replace process
-├── icecast.js      # admin polling, readiness check, mountpoint state
-├── stream.js       # orchestration ("main" module)
-├── auth.js         # API key validation (Fastify hook)
-├── routes.js       # HTTP handlers
-├── config.js       # env config
-└── index.js        # bootstrap
+├── events.js         # event bus (pub/sub) + exported Event map
+├── childProcess.js   # base class: process lifecycle, kill, stderr tail
+├── streamlink.js     # streamlink process: fetch + open the stream
+├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
+├── icecast.js        # passive admin client (pollNow), sourceUrl, streamUrl, mountpoint readiness/wait
+├── healthMonitor.js  # /health facade: status snapshot + ok/failure verdict
+├── stream.js         # orchestration: pipeline, TTL watcher (owns the polling), status snapshot
+├── ttlWatcher.js     # zero-listener TTL: polls Icecast, emits ttl:expired
+├── auth.js           # API key validation (Fastify hook)
+├── routes.js         # HTTP handlers
+├── config.js         # env config
+├── utils/
+│   └── isValidYoutubeUrl.js  # SSRF-guard URL validation
+└── index.js          # bootstrap
 ```
 
 ### 4.2 Control flow — no state machine
@@ -121,21 +125,22 @@ Drop the explicit state machine entirely. The single-flight `requestInProgress` 
 ```js
 current = {
   url, // YouTube URL
-  ffmpegProc, // child process handle
-  listeners, // last polled count
-  idleSince, // timestamp when listeners hit 0
-  startedAt,
+  phase: 'starting' | 'streaming' | 'stopped',
+  startedAt, // timestamp when streaming began (for uptime)
 };
 ```
 
 `start(url)` runs strictly sequentially with `async/await`:
 
-1. `yt-dlp.extractUrl(url)` — obtain audio stream URL
-2. `icecast.verifyReady()` — confirm Icecast accepts sources
-3. `ffmpeg.replace(audioUrl)` — SIGTERM any old process, wait for the mountpoint to clear, spawn a fresh process
-4. any step throwing fails the request (`500`); no retries
+1. stop any existing pipeline (kill streamlink + ffmpeg, await exit)
+2. `icecast.prepareMountPoint()` — Icecast reachable and mount free (old source released)
+3. streamlink picks a proxy itself — a random entry from `config.proxyList` (null when none)
+4. `streamlink.spawnProcess(url)` — spawns and waits for the stream to open (first stdout data)
+5. `ffmpeg.spawnProcess(outputUrl)` — spawns; `streamlink.pipe(ffmpeg)`
+6. `icecast.waitForMountpoint()` — confirm the source is connected
+7. any step throwing fails the request (`500`); no retries
 
-Background concerns (TTL, mountpoint loss) subscribe to the event bus rather than living inside a state machine.
+Background concerns are handled without a state machine: the zero-listener **TTL** is enforced by a dedicated **TTLWatcher** (created by Stream, which passes it the Icecast client) — it runs only while a stream is active, polls Icecast for the listener count every 60s (TTL is configured in minutes; Icecast is a passive client and knows nothing about TTL), and on expiry emits `ttl:expired` and stops itself; Stream reacts by stopping the pipeline. Unexpected **process exits** arrive via the event bus; a stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL).
 
 ### 4.3 Event bus
 
@@ -143,25 +148,26 @@ A small pub/sub bus decouples the modules:
 
 | Event               | Emitted by            | Consumed by      |
 | ------------------- | --------------------- | ---------------- |
-| `stream:started`    | stream                | logging, TTL     |
+| `stream:started`    | stream                | logging          |
 | `stream:stopped`    | stream                | logging          |
-| `stream:error`      | stream                | logging, health  |
-| `listeners:changed` | icecast               | TTL, status      |
-| `ttl:expired`       | stream (on listeners) | stops the stream |
+| `stream:error`      | stream                | logging          |
+| `ttl:expired`       | ttlWatcher (on expiry) | stream stops the pipeline |
+| `process:exited`    | process wrappers      | stops the stream |
 
 ### 4.4 Configuration (env vars)
 
-| Variable                  | Default      | Purpose                                 |
-| ------------------------- | ------------ | --------------------------------------- |
-| `API_KEY`                 | _(required)_ | API auth                                |
-| `ALLOW_KEY_IN_QUERY`      | `false`      | Allow `?key=` query auth                |
-| `SITE_ADDRESS`            | `:80`        | Public address for Caddy + redirects    |
-| `ICECAST_MAX_LISTENERS`   | `2`          | Per-mount listener cap                  |
-| `STREAM_TTL_MINUTES`      | `15`         | Auto-stop after N min of zero listeners |
-| `ICECAST_SOURCE_PASSWORD` | —            | Source auth (ffmpeg → Icecast)          |
-| `ICECAST_ADMIN_PASSWORD`  | —            | Admin API auth (internal polling)       |
-| `COOKIES_PATH`            | —            | yt-dlp cookies file                     |
-| `LOG_LEVEL`               | `info`       | pino log level                          |
+| Variable                     | Default      | Purpose                                 |
+| ---------------------------- | ------------ | --------------------------------------- |
+| `API_KEY`                    | _(required)_ | API auth                                |
+| `ALLOW_KEY_IN_QUERY`         | `false`      | Allow `?key=` query auth                |
+| `SITE_ADDRESS`               | `:80`        | Public address for Caddy + redirects    |
+| `ICECAST_MAX_LISTENERS`      | `2`          | Per-mount listener cap                  |
+| `STREAM_TTL_MINUTES`         | `15`         | Auto-stop after N min of zero listeners (polled every 60s) |
+| `ICECAST_SOURCE_PASSWORD`    | —            | Source auth (ffmpeg → Icecast)          |
+| `ICECAST_ADMIN_PASSWORD`     | —            | Admin API auth (internal polling)       |
+| `PROXY_FILE`                 | —            | JSON array of proxy URLs → `config.proxyList` |
+| `STREAMLINK_QUALITY`         | `audio_only,worst` | streamlink `--default-stream`    |
+| `LOG_LEVEL`                  | `info`       | pino log level                          |
 
 ---
 
@@ -169,14 +175,16 @@ A small pub/sub bus decouples the modules:
 
 ### 5.1 Unit tests — `node:test`
 
-Every module gets unit tests. Use `node:test` + `mock` for `child_process` and `fetch`. Cover basic and non-obvious scenarios:
+Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `mock.module` (run with `--experimental-test-module-mocks`), plus real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Tests mirror the `src/` tree under `test/`. Cover basic and non-obvious scenarios:
 
-- **yt-dlp** — valid URL, invalid/bot-blocked response, non-zero exit, timeout.
-- **ffmpeg** — spawn args, kill+replace (mountpoint wait), process exit.
-- **icecast** — ready/unreachable, mountpoint active/inactive, listener parse.
-- **stream** — sequential happy path, failure propagation, single-flight.
+- **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, `pipe`, stderr tail.
+- **streamlink** — spawn args, proxy picking (random from config), open-wait, error tail.
+- **ffmpeg** — spawn args, output URL, readiness, process exit.
+- **icecast** — ready/unreachable, mountpoint active/inactive, listener parse, `prepareMountPoint`, `waitForMountpoint`.
+- **stream** — sequential happy path, failure propagation, replace, TTL, process-exit handling.
 - **auth** — header, query, missing/invalid key.
 - **routes** — status codes (400/401/429/500/302).
+- **utils/isValidYoutubeUrl** — SSRF cases.
 
 ### 5.2 Linting — `oxlint`
 
@@ -212,7 +220,7 @@ Every module gets unit tests. Use `node:test` + `mock` for `child_process` and `
 
 **Concerns to resolve at design time:**
 
-- **Resource limits** — cap concurrent streams (`MAX_STREAMS`), since each needs an ffmpeg + yt-dlp (memory spikes during challenge solving).
+- **Resource limits** — cap concurrent streams (`MAX_STREAMS`), since each needs an ffmpeg + streamlink (memory spikes during challenge solving).
 - **TTL per stream** — zero-listeners auto-stop applies independently.
 - **Preserving the single-GET convenience** — a `default` stream (e.g. `/api/stream`) can remain a shortcut to stream `#1`.
 - **Authentication** — same key scheme applies to all management endpoints.
