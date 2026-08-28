@@ -11,8 +11,8 @@ export class IcecastUnreachableError extends Error {
 }
 
 /**
- * Icecast admin client. Passive — it only polls when asked (pollNow) and
- * exposes the last result; the caller (Stream) owns any polling schedule.
+ * Icecast admin client. Passive — it only fetches when asked (getStatus)
+ * and knows nothing about polling schedules; the caller (Stream) owns them.
  */
 export class Icecast {
   #config;
@@ -20,7 +20,6 @@ export class Icecast {
   #mountpointTimeout;
   #mountpointClearTimeout;
   #waitPollInterval;
-  #status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
 
   constructor({ config, logger, timeouts = {} }) {
     this.#config = config;
@@ -60,32 +59,27 @@ export class Icecast {
     };
   }
 
-  async #poll() {
+  /**
+   * Fetches and returns the current Icecast status: reachability, whether
+   * the mountpoint is active, and the listener count. Never throws — an
+   * unreachable Icecast is a status like any other.
+   */
+  async getStatus() {
     try {
-      const res = await fetch(this.#adminUrl, { headers: this.#authHeaders });
+      const res = await fetch(this.#adminUrl, { headers: this.#authHeaders, signal: AbortSignal.timeout(5_000) });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      const parsed = this.#parseListeners(await res.text());
-      this.#status = { icecastReachable: true, ...parsed };
+      return { icecastReachable: true, ...this.#parseListeners(await res.text()) };
     } catch (err) {
-      this.#status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
       this.#logger.warn({ err: err.message }, 'icecast poll failed');
+      return { icecastReachable: false, mountpointActive: false, listeners: 0 };
     }
-  }
-
-  getStatus() {
-    return { ...this.#status };
   }
 
   /** Public audio mount URL the client is redirected to after a successful start. */
   get streamUrl() {
     return `http://${this.#config.publicHostname}:${this.#config.icecast.publicPort}/stream`;
-  }
-
-  async pollNow() {
-    await this.#poll();
-    return { ...this.#status };
   }
 
   /**
@@ -125,26 +119,17 @@ export class Icecast {
   }
 
   async #waitForMountState(active, timeoutMs) {
-    // Confirm Icecast is reachable (and not already in the target state)
-    // before starting to poll for it.
-    const initial = await this.pollNow();
-    if (!initial.icecastReachable) {
-      throw new IcecastUnreachableError();
-    }
-    if (initial.mountpointActive === active) {
-      return;
-    }
-
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const status = await this.pollNow();
+    while (true) {
+      const status = await this.getStatus();
       if (!status.icecastReachable) {
-        // Fail fast — polling a dead Icecast until the deadline would only
-        // produce a misleading 'mountpoint never became active'.
         throw new IcecastUnreachableError();
       }
       if (status.mountpointActive === active) {
         return;
+      }
+      if (Date.now() >= deadline) {
+        break;
       }
       // Never sleep past the deadline — the wait's own outcome always wins
       // over any external timeout.

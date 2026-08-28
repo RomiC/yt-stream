@@ -29,7 +29,7 @@ before(async (ctx) => {
 
         async prepareMountPoint() {}
         async waitForMountpoint() {}
-        async pollNow() {
+        async getStatus() {
           return { ...this.status };
         }
 

@@ -14,12 +14,12 @@ describe('TTLWatcher', () => {
       logger: silentLogger(),
       events,
       icecast: {
-        pollNow: async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 })
+        getStatus: async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 })
       },
       ...overrides
     };
     const watcher = new TTLWatcher(deps);
-    return { watcher, events, pollNow: deps.icecast.pollNow };
+    return { watcher, events, getStatus: deps.icecast.getStatus };
   }
 
   test('emits ttl:expired when zero listeners persist past the TTL', async (ctx) => {
@@ -43,7 +43,7 @@ describe('TTLWatcher', () => {
     let listeners = 0;
     const { watcher, events } = makeWatcher({
       icecast: {
-        pollNow: async () => ({ icecastReachable: true, mountpointActive: true, listeners })
+        getStatus: async () => ({ icecastReachable: true, mountpointActive: true, listeners })
       }
     });
     const onTtlExpired = mock.fn();
@@ -66,7 +66,7 @@ describe('TTLWatcher', () => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
     const { watcher, events } = makeWatcher({
       icecast: {
-        pollNow: async () => ({ icecastReachable: false, mountpointActive: false, listeners: 0 })
+        getStatus: async () => ({ icecastReachable: false, mountpointActive: false, listeners: 0 })
       }
     });
     const onTtlExpired = mock.fn();
@@ -83,19 +83,19 @@ describe('TTLWatcher', () => {
 
   test('watch is a no-op when TTL is disabled', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval'] });
-    const pollNow = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
-    const { watcher } = makeWatcher({ config: { streamTtlMinutes: 0 }, icecast: { pollNow } });
+    const getStatus = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
+    const { watcher } = makeWatcher({ config: { streamTtlMinutes: 0 }, icecast: { getStatus } });
 
     watcher.watch(URL);
     ctx.mock.timers.tick(600_000);
 
-    assert.equal(pollNow.mock.callCount(), 0);
+    assert.equal(getStatus.mock.callCount(), 0);
   });
 
   test('stop halts polling', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval'] });
-    const pollNow = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
-    const { watcher } = makeWatcher({ icecast: { pollNow } });
+    const getStatus = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
+    const { watcher } = makeWatcher({ icecast: { getStatus } });
 
     watcher.watch(URL);
     ctx.mock.timers.tick(60_000);
@@ -103,7 +103,7 @@ describe('TTLWatcher', () => {
     watcher.stop();
     ctx.mock.timers.tick(600_000);
 
-    assert.equal(pollNow.mock.callCount(), 1);
+    assert.equal(getStatus.mock.callCount(), 1);
   });
 
   test('watch is idempotent and resets the idle state', async (ctx) => {

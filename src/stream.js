@@ -145,7 +145,7 @@ export class Stream {
    * state + URL. Independent of the TTL watcher.
    */
   async getStatus() {
-    const icecastStatus = await this.#icecast.pollNow();
+    const icecastStatus = await this.#icecast.getStatus();
     return {
       streamlink: { status: this.#streamlink.isAlive() ? 'running' : 'stopped' },
       ffmpeg: { status: this.#ffmpeg.isAlive() ? 'running' : 'stopped' },

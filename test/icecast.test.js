@@ -47,11 +47,11 @@ describe('Icecast', () => {
   const EMPTY_XML = `<?xml version="1.0"?>
 <icestats></icestats>`;
 
-  describe('poll', () => {
+  describe('getStatus', () => {
     test('pollNow parses the /stream mountpoint listener count', async (ctx) => {
       ctx.mock.method(globalThis, 'fetch', async () => okResponse(MOUNT_XML));
 
-      const status = await makeIcecast().pollNow();
+      const status = await makeIcecast().getStatus();
 
       assert.deepEqual(status, { icecastReachable: true, mountpointActive: true, listeners: 2 });
     });
@@ -59,7 +59,7 @@ describe('Icecast', () => {
     test('HTTP error marks Icecast unreachable', async (ctx) => {
       ctx.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 503, text: async () => '' }));
 
-      const status = await makeIcecast().pollNow();
+      const status = await makeIcecast().getStatus();
 
       assert.deepEqual(status, { icecastReachable: false, mountpointActive: false, listeners: 0 });
     });
@@ -69,7 +69,7 @@ describe('Icecast', () => {
         throw new Error('ECONNREFUSED');
       });
 
-      const status = await makeIcecast().pollNow();
+      const status = await makeIcecast().getStatus();
 
       assert.deepEqual(status, { icecastReachable: false, mountpointActive: false, listeners: 0 });
     });
@@ -77,7 +77,7 @@ describe('Icecast', () => {
     test('mount not present reports inactive', async (ctx) => {
       ctx.mock.method(globalThis, 'fetch', async () => okResponse(OTHER_MOUNT_XML));
 
-      const status = await makeIcecast().pollNow();
+      const status = await makeIcecast().getStatus();
 
       assert.deepEqual(status, { icecastReachable: true, mountpointActive: false, listeners: 0 });
     });
@@ -86,7 +86,7 @@ describe('Icecast', () => {
       const fetchMock = ctx.mock.method(globalThis, 'fetch', async () => okResponse(EMPTY_XML));
       const icecast = makeIcecast({ icecast: { host: 'ic', port: 8000, adminPassword: 'testadmin' } });
 
-      await icecast.pollNow();
+      await icecast.getStatus();
 
       assert.equal(
         fetchMock.mock.calls[0].arguments[1].headers.Authorization,
@@ -94,15 +94,7 @@ describe('Icecast', () => {
       );
     });
   });
-  describe('status and URLs', () => {
-    test('getStatus returns the last poll result', async (ctx) => {
-      ctx.mock.method(globalThis, 'fetch', async () => okResponse(MOUNT_XML));
-      const icecast = makeIcecast();
-
-      await icecast.pollNow();
-      assert.deepEqual(icecast.getStatus(), { icecastReachable: true, mountpointActive: true, listeners: 2 });
-    });
-
+  describe('URLs', () => {
     test('sourceUrl and streamUrl getters are derived from config', () => {
       const icecast = makeIcecast({
         icecast: { host: 'ic', port: 8000, sourcePassword: 'secret', publicPort: 8871 },

@@ -51,7 +51,7 @@ export class TTLWatcher {
   }
 
   async #tick() {
-    const iceStatus = await this.#icecast.pollNow();
+    const iceStatus = await this.#icecast.getStatus();
     if (!iceStatus.icecastReachable || iceStatus.listeners > 0) {
       this.#idleSince = null;
       return;
