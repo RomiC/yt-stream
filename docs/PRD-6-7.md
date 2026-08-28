@@ -132,7 +132,7 @@ current = {
 
 `start(url)` runs strictly sequentially with `async/await`:
 
-1. stop any existing pipeline (kill streamlink + ffmpeg, await exit)
+1. stop any existing pipeline (kill streamlink + ffmpeg, await exit; emits `stream:stopped` with reason `replaced`)
 2. `icecast.prepareMountPoint()` — Icecast reachable and mount free (old source released)
 3. streamlink picks a proxy itself — a random entry from `config.proxyList` (null when none)
 4. `streamlink.spawnProcess(url)` — spawns and waits for the stream to open (first stdout data)
@@ -153,6 +153,8 @@ A small pub/sub bus decouples the modules:
 | `stream:error`      | stream                | logging          |
 | `ttl:expired`       | ttlWatcher (on expiry) | stream stops the pipeline |
 | `process:exited`    | process wrappers      | stops the stream |
+
+Every pipeline teardown declares its reason — `stream:stopped` carries one of `manual`, `replaced`, `process-exit` or `ttl`. A replace records the old stream's end **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for; a failed start itself surfaces as `stream:error` (it never emitted `stream:started`).
 
 ### 4.4 Configuration (env vars)
 

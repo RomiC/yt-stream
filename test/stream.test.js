@@ -200,8 +200,11 @@ describe('Stream', () => {
       assert.equal((await stream.getStatus()).general.state, 'idle');
     });
 
-    test('replacing a stream: stop the old pipeline, then start anew', async () => {
-      const { stream, icecast, streamlink, ttlWatcher } = createStream();
+    test('replacing a stream: records the old one as replaced, then starts anew', async () => {
+      const { stream, events, icecast, streamlink, ttlWatcher } = createStream();
+      const order = [];
+      events.on(Event.streamStarted, ({ url }) => order.push(`started:${url.slice(-3)}`));
+      events.on(Event.streamStopped, ({ url, reason }) => order.push(`stopped:${url.slice(-3)}:${reason}`));
       const prepare = mock.fn(async () => {});
       icecast.prepareMountPoint = prepare;
       streamlink.spawnProcess = mock.fn(async () => streamlink);
@@ -209,12 +212,38 @@ describe('Stream', () => {
       await stream.start('https://youtube.com/watch?v=abc');
       await stream.start('https://youtube.com/watch?v=def');
 
+      assert.deepEqual(order, ['started:abc', 'stopped:abc:replaced', 'started:def']);
       assert.equal(prepare.mock.callCount(), 2);
       assert.deepEqual(ttlWatcher.watched, ['https://youtube.com/watch?v=abc', 'https://youtube.com/watch?v=def']);
       assert.equal(ttlWatcher.stops, 1); // the old stream's watcher was stopped
       const status = await stream.getStatus();
       assert.equal(status.general.state, 'streaming');
       assert.equal(status.general.url, 'https://youtube.com/watch?v=def');
+    });
+
+    test('failed replace: the old stream is recorded as replaced, the new one as an error', async () => {
+      const { stream, events, icecast, streamlink } = createStream();
+      const onStopped = mock.fn();
+      const onError = mock.fn();
+      events.on(Event.streamStopped, onStopped);
+      events.on(Event.streamError, onError);
+      streamlink.spawnProcess = mock.fn(async () => streamlink);
+
+      await stream.start('https://youtube.com/watch?v=abc');
+
+      icecast.prepareMountPoint = async () => {
+        throw new Error('old source still connected to the mountpoint');
+      };
+      await assert.rejects(stream.start('https://youtube.com/watch?v=def'), /old source still connected/);
+
+      assert.equal(onStopped.mock.callCount(), 1);
+      assert.deepEqual(onStopped.mock.calls[0].arguments[0], {
+        reason: 'replaced',
+        url: 'https://youtube.com/watch?v=abc'
+      });
+      assert.equal(onError.mock.callCount(), 1);
+      assert.equal(onError.mock.calls[0].arguments[0].url, 'https://youtube.com/watch?v=def');
+      assert.equal((await stream.getStatus()).general.state, 'idle');
     });
   });
 

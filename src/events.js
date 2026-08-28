@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
  * these constants project-wide — never raw string literals.
  *
  *   streamStarted     { url }
- *   streamStopped     { url, reason: 'manual'|'process-exit'|'mountpoint-lost'|'ttl' }
+ *   streamStopped     { url, reason: 'manual'|'replaced'|'process-exit'|'ttl' }
  *   streamError       { url, error }
  *   ttlExpired        { url }
  *   processExited     { cmd, code, pid }  (unexpected process exit)

@@ -45,17 +45,13 @@ export class Stream {
   }
 
   /**
-   * Kills both processes. When a `reason` is given (a genuine stop) and the
-   * stream is still streaming, also marks it stopped and emits
-   * stream:stopped — the phase guard makes the stop idempotent across races
-   * (a late process-exit or TTL event after a manual stop won't emit twice).
-   * The replace/failure paths call it without a reason to just tear down
-   * silently.
+   * Kills both processes; the phase guard makes the stop idempotent and
+   * skips streams that never announced themselves with stream:started.
    */
   async #stopPipeline(reason) {
     await this.#streamlink.kill();
     await this.#ffmpeg.kill();
-    if (reason && this.#current?.phase === 'streaming') {
+    if (this.#current?.phase === 'streaming') {
       this.#current.phase = 'stopped';
       this.#current.startedAt = null;
       this.#events.emit(Event.streamStopped, { reason, url: this.#current.url });
@@ -87,16 +83,11 @@ export class Stream {
 
     const replacing = Boolean(this.#current);
     if (replacing) {
-      await this.#stopPipeline();
+      await this.#stopPipeline('replaced');
       this.#ttlWatcher.stop();
     }
 
     try {
-      // Stop any existing pipeline, confirm Icecast is ready and the mount is
-      // free (old source released), then spawn the pipeline: streamlink
-      // proves it opened the stream (picking its own proxy from config),
-      // ffmpeg is spawned knowing nothing about the source, Stream pipes the
-      // two and waits for the mountpoint.
       await this.#icecast.prepareMountPoint();
       this.#current = {
         url: youtubeUrl,
@@ -115,7 +106,7 @@ export class Stream {
       this.#events.emit(Event.streamStarted, { url: youtubeUrl });
     } catch (err) {
       this.#logger.error({ err: err.message }, 'failed to start stream');
-      await this.#stopPipeline();
+      await this.#stopPipeline('start-failed');
       this.#ttlWatcher.stop();
       this.#current = null;
       this.#events.emit(Event.streamError, { url: youtubeUrl, error: err.message });
