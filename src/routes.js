@@ -54,15 +54,15 @@ export async function registerRoutes(app, { streamService, healthMonitor }) {
       return { error: 'A stream operation is in progress' };
     }
 
-    const status = await streamService.getStatus();
-
-    if (status.general.state === 'idle' || status.general.state === 'stopped') {
-      reply.code(404);
-      return { error: 'No active stream' };
-    }
-
     requestInProgress = true;
     try {
+      const status = await streamService.getStatus();
+
+      if (status.general.state === 'idle' || status.general.state === 'stopped') {
+        reply.code(404);
+        return { error: 'No active stream' };
+      }
+
       await streamService.stop();
       return {
         state: 'stopped',

@@ -119,6 +119,25 @@ describe('Routes', () => {
       assert.equal(res.statusCode, 404);
     });
 
+    test('concurrent deletes: the one losing the status-check race gets 429', async () => {
+      const deps = makeDeps();
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      deps.streamService.getStatus = async () => gate;
+      const app = await buildApp(deps);
+
+      const first = app.inject({ method: 'DELETE', url: '/stream' });
+      await sleep(20);
+
+      const second = await app.inject({ method: 'DELETE', url: '/stream' });
+      assert.equal(second.statusCode, 429);
+
+      release({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
+      assert.equal((await first).statusCode, 200);
+    });
+
     test('DELETE /stream after a stopped stream returns 404', async () => {
       const deps = makeDeps();
       deps.streamService.getStatus = async () => ({ ...idleStatus(), general: { state: 'stopped', url: VALID_URL } });
