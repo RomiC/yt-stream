@@ -21,14 +21,18 @@ before(async (ctx) => {
 
   ctx.mock.module('../src/icecast.js', {
     exports: {
+      IcecastUnreachableError: class IcecastUnreachableError extends Error {
+        constructor() {
+          super('Icecast unreachable — cannot start stream');
+        }
+      },
       Icecast: class FakeIcecast {
         constructor() {
-          this.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+          this.status = { icecastReachable: true, mountpointActive: true, listeners: 0 };
           icecastInstances.push(this);
         }
 
         async prepareMountPoint() {}
-        async waitForMountpoint() {}
         async getStatus() {
           return { ...this.status };
         }
@@ -52,6 +56,10 @@ before(async (ctx) => {
           streamlinkInstances.push(this);
         }
 
+        get command() {
+          return 'streamlink';
+        }
+
         async spawnProcess() {
           this.spawned = true;
           return this;
@@ -60,11 +68,16 @@ before(async (ctx) => {
         pipe() {}
 
         async kill() {
+          this.spawned = false;
           return true;
         }
 
         isAlive() {
           return this.spawned;
+        }
+
+        getErrorTail() {
+          return this.errorTail ?? '';
         }
       }
     }
@@ -78,16 +91,25 @@ before(async (ctx) => {
           ffmpegInstances.push(this);
         }
 
+        get command() {
+          return 'ffmpeg';
+        }
+
         async spawnProcess() {
           this.spawned = true;
         }
 
         async kill() {
+          this.spawned = false;
           return true;
         }
 
         isAlive() {
           return this.spawned;
+        }
+
+        getErrorTail() {
+          return this.errorTail ?? '';
         }
       }
     }
@@ -117,9 +139,9 @@ before(async (ctx) => {
 });
 
 /** Builds a Stream with fresh fakes; returns the latest instances. */
-function createStream() {
+function createStream(timeouts = {}) {
   const events = new EventBus();
-  const stream = new Stream({ config: { streamTtlMinutes: 15 }, logger: silentLogger(), events });
+  const stream = new Stream({ config: { streamTtlMinutes: 15 }, logger: silentLogger(), events, timeouts });
   return {
     stream,
     events,
@@ -138,7 +160,10 @@ describe('Stream', () => {
       events.on(Event.streamStarted, onStarted);
       const pipe = mock.fn();
       streamlink.pipe = pipe;
-      const spawnFfmpeg = mock.fn(async () => ffmpeg);
+      const spawnFfmpeg = mock.fn(async () => {
+        ffmpeg.spawned = true;
+        return ffmpeg;
+      });
       ffmpeg.spawnProcess = spawnFfmpeg;
 
       await stream.start(URL);
@@ -154,7 +179,10 @@ describe('Stream', () => {
 
     test('idempotent: starting the same URL again is a no-op', async () => {
       const { stream, streamlink, ttlWatcher } = createStream();
-      streamlink.spawnProcess = mock.fn(async () => streamlink);
+      streamlink.spawnProcess = mock.fn(async () => {
+        streamlink.spawned = true;
+        return streamlink;
+      });
 
       await stream.start(URL);
       await stream.start(URL);
@@ -179,24 +207,68 @@ describe('Stream', () => {
       assert.equal((await stream.getStatus()).general.state, 'idle');
     });
 
-    test('failure: waitForMountpoint rejection propagates, kills the pipeline and emits stream:error', async () => {
-      const { stream, events, icecast, streamlink, ffmpeg } = createStream();
+    test('failure: a dead pipeline process fails the start with attribution', async () => {
+      const { stream, events, icecast, streamlink } = createStream();
       const onError = mock.fn();
       events.on(Event.streamError, onError);
-      icecast.waitForMountpoint = async () => {
-        throw new Error('pipeline exited before connecting to Icecast');
+      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+      streamlink.errorTail = 'error: No playable streams found for this URL\n';
+      streamlink.spawnProcess = async () => {
+        streamlink.spawned = true;
+        events.emit(Event.processExited, { cmd: 'streamlink', code: 1, pid: 4242 });
+        return streamlink;
       };
-      const killStreamlink = mock.fn(async () => true);
-      const killFfmpeg = mock.fn(async () => true);
-      streamlink.kill = killStreamlink;
-      ffmpeg.kill = killFfmpeg;
 
-      await assert.rejects(stream.start(URL), /pipeline exited/);
+      await assert.rejects(
+        stream.start(URL),
+        /streamlink exited before the mountpoint became active.*No playable streams/
+      );
 
       assert.equal(onError.mock.callCount(), 1);
-      assert.ok(onError.mock.calls[0].arguments[0].error.includes('pipeline exited'));
-      assert.equal(killStreamlink.mock.callCount(), 1);
-      assert.equal(killFfmpeg.mock.callCount(), 1);
+      assert.equal((await stream.getStatus()).general.state, 'idle');
+    });
+
+    test('a mid-start process exit is attributed to the dead process, not the killed survivor', async () => {
+      const { stream, events, icecast, ffmpeg } = createStream({ pollInterval: 1 });
+      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+      ffmpeg.spawnProcess = async () => {
+        ffmpeg.spawned = true;
+        events.emit(Event.processExited, { cmd: 'ffmpeg', code: 1, pid: 99 });
+      };
+
+      await assert.rejects(stream.start(URL), /ffmpeg exited before the mountpoint became active/);
+      assert.equal((await stream.getStatus()).general.state, 'idle');
+    });
+
+    test('readiness: keeps polling until the mountpoint becomes active', async () => {
+      const { stream, events, icecast } = createStream({ pollInterval: 1 });
+      const onStarted = mock.fn();
+      events.on(Event.streamStarted, onStarted);
+      let calls = 0;
+      icecast.getStatus = async () => {
+        calls += 1;
+        return { icecastReachable: true, mountpointActive: calls >= 3, listeners: 0 };
+      };
+
+      await stream.start(URL);
+
+      assert.ok(calls >= 3);
+      assert.equal(onStarted.mock.callCount(), 1);
+    });
+
+    test('readiness: fails when Icecast drops mid-wait', async () => {
+      const { stream, icecast } = createStream({ pollInterval: 1 });
+      icecast.status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
+
+      await assert.rejects(stream.start(URL), /Icecast unreachable/);
+      assert.equal((await stream.getStatus()).general.state, 'idle');
+    });
+
+    test('readiness: times out when the mountpoint never activates and nothing exits', async () => {
+      const { stream, icecast } = createStream({ mountpointTimeout: 20, pollInterval: 1 });
+      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+
+      await assert.rejects(stream.start(URL), /mountpoint never became active/);
       assert.equal((await stream.getStatus()).general.state, 'idle');
     });
 
@@ -207,7 +279,10 @@ describe('Stream', () => {
       events.on(Event.streamStopped, ({ url, reason }) => order.push(`stopped:${url.slice(-3)}:${reason}`));
       const prepare = mock.fn(async () => {});
       icecast.prepareMountPoint = prepare;
-      streamlink.spawnProcess = mock.fn(async () => streamlink);
+      streamlink.spawnProcess = mock.fn(async () => {
+        streamlink.spawned = true;
+        return streamlink;
+      });
 
       await stream.start('https://youtube.com/watch?v=abc');
       await stream.start('https://youtube.com/watch?v=def');
@@ -227,7 +302,10 @@ describe('Stream', () => {
       const onError = mock.fn();
       events.on(Event.streamStopped, onStopped);
       events.on(Event.streamError, onError);
-      streamlink.spawnProcess = mock.fn(async () => streamlink);
+      streamlink.spawnProcess = mock.fn(async () => {
+        streamlink.spawned = true;
+        return streamlink;
+      });
 
       await stream.start('https://youtube.com/watch?v=abc');
 

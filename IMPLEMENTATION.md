@@ -1,6 +1,8 @@
 # Implementation Plan
 
-> **Note:** The final implementation was simplified from this plan: retries, persistence, and startup resume were removed. See DESIGN.md for the current architecture. **2026-08 update:** the streaming pipeline no longer uses `yt-dlp`. The live stream is now fetched by **streamlink** (optionally through a rotating proxy from `proxy.json`) and piped into ffmpeg, which only transcodes to MP3 and pushes to Icecast. Sections below referencing yt-dlp/cookies are historical.
+> **Status: superseded.** Historical PoC plan — the current architecture is defined in [`docs/PRD-6-7.md`](docs/PRD-6-7.md).
+
+> **Note:** The final implementation was simplified from this plan: retries, persistence, and startup resume were removed. See DESIGN.md for the PoC architecture. **2026-08 update:** the streaming pipeline no longer uses `yt-dlp`. The live stream is now fetched by **streamlink** (optionally through a rotating proxy from `proxy.json`) and piped into ffmpeg, which only transcodes to MP3 and pushes to Icecast. Sections below referencing yt-dlp/cookies are historical.
 
 ## Architecture Overview (historical)
 

@@ -48,7 +48,7 @@ describe('Icecast', () => {
 <icestats></icestats>`;
 
   describe('getStatus', () => {
-    test('pollNow parses the /stream mountpoint listener count', async (ctx) => {
+    test('getStatus parses the /stream mountpoint listener count', async (ctx) => {
       ctx.mock.method(globalThis, 'fetch', async () => okResponse(MOUNT_XML));
 
       const status = await makeIcecast().getStatus();
@@ -82,7 +82,7 @@ describe('Icecast', () => {
       assert.deepEqual(status, { icecastReachable: true, mountpointActive: false, listeners: 0 });
     });
 
-    test('poll sends basic auth with the admin password', async (ctx) => {
+    test('getStatus sends basic auth with the admin password', async (ctx) => {
       const fetchMock = ctx.mock.method(globalThis, 'fetch', async () => okResponse(EMPTY_XML));
       const icecast = makeIcecast({ icecast: { host: 'ic', port: 8000, adminPassword: 'testadmin' } });
 
@@ -133,39 +133,6 @@ describe('Icecast', () => {
       await assert.rejects(
         makeIcecast({}, { waitPollInterval: 5, mountpointClearTimeout: 50 }).prepareMountPoint(),
         /old source still connected to the mountpoint/
-      );
-    });
-  });
-  describe('waitForMountpoint', () => {
-    test('waitForMountpoint resolves once the source is connected', async (ctx) => {
-      const bodies = [EMPTY_XML, MOUNT_XML];
-      ctx.mock.method(globalThis, 'fetch', async () => okResponse(bodies.shift()));
-
-      await makeIcecast({}, { waitPollInterval: 5, mountpointTimeout: 200 }).waitForMountpoint();
-    });
-
-    test('waitForMountpoint throws IcecastUnreachableError when Icecast drops mid-wait', async (ctx) => {
-      let calls = 0;
-      ctx.mock.method(globalThis, 'fetch', async () => {
-        calls += 1;
-        if (calls === 1) {
-          return okResponse(EMPTY_XML);
-        }
-        throw new Error('ECONNREFUSED');
-      });
-
-      await assert.rejects(
-        makeIcecast({}, { waitPollInterval: 5, mountpointTimeout: 200 }).waitForMountpoint(),
-        IcecastUnreachableError
-      );
-    });
-
-    test('waitForMountpoint times out when the mount never becomes active', async (ctx) => {
-      ctx.mock.method(globalThis, 'fetch', async () => okResponse(EMPTY_XML));
-
-      await assert.rejects(
-        makeIcecast({}, { waitPollInterval: 5, mountpointTimeout: 50 }).waitForMountpoint(),
-        /mountpoint never became active/
       );
     });
   });

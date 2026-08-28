@@ -104,11 +104,11 @@ Replace the monolithic `stream-manager.js` with focused modules:
 src/
 ├── events.js         # event bus (pub/sub) + exported Event map
 ├── childProcess.js   # base class: process lifecycle, kill, stderr tail
-├── streamlink.js     # streamlink process: fetch + open the stream
+├── streamlink.js     # streamlink process: fetch the stream
 ├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
-├── icecast.js        # passive admin client (pollNow), sourceUrl, streamUrl, mountpoint readiness/wait
+├── icecast.js        # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
 ├── healthMonitor.js  # /health facade: status snapshot + ok/failure verdict
-├── stream.js         # orchestration: pipeline, TTL watcher (owns the polling), status snapshot
+├── stream.js         # orchestration: pipeline, mountpoint readiness, TTL watcher, status snapshot
 ├── ttlWatcher.js     # zero-listener TTL: polls Icecast, emits ttl:expired
 ├── auth.js           # API key validation (Fastify hook)
 ├── routes.js         # HTTP handlers
@@ -135,10 +135,9 @@ current = {
 1. stop any existing pipeline (kill streamlink + ffmpeg, await exit; emits `stream:stopped` with reason `replaced`)
 2. `icecast.prepareMountPoint()` — Icecast reachable and mount free (old source released)
 3. streamlink picks a proxy itself — a random entry from `config.proxyList` (null when none)
-4. `streamlink.spawnProcess(url)` — spawns and waits for the stream to open (first stdout data)
-5. `ffmpeg.spawnProcess(outputUrl)` — spawns; `streamlink.pipe(ffmpeg)`
-6. `icecast.waitForMountpoint()` — confirm the source is connected
-7. any step throwing fails the request (`500`); no retries
+4. `streamlink.spawnProcess(url)` and `ffmpeg.spawnProcess(outputUrl)` — spawn; `streamlink.pipe(ffmpeg)`
+5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits (with its stderr tail)
+6. any step throwing fails the request (`500`); no retries
 
 Background concerns are handled without a state machine: the zero-listener **TTL** is enforced by a dedicated **TTLWatcher** (created by Stream, which passes it the Icecast client) — it runs only while a stream is active, polls Icecast for the listener count every 60s (TTL is configured in minutes; Icecast is a passive client and knows nothing about TTL), and on expiry emits `ttl:expired` and stops itself; Stream reacts by stopping the pipeline. Unexpected **process exits** arrive via the event bus; a stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL).
 
@@ -179,11 +178,11 @@ Every pipeline teardown declares its reason — `stream:stopped` carries one of 
 
 Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `mock.module` (run with `--experimental-test-module-mocks`), plus real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Tests mirror the `src/` tree under `test/`. Cover basic and non-obvious scenarios:
 
-- **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, `pipe`, stderr tail.
-- **streamlink** — spawn args, proxy picking (random from config), open-wait, error tail.
-- **ffmpeg** — spawn args, output URL, readiness, process exit.
-- **icecast** — ready/unreachable, mountpoint active/inactive, listener parse, `prepareMountPoint`, `waitForMountpoint`.
-- **stream** — sequential happy path, failure propagation, replace, TTL, process-exit handling.
+- **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, stderr tail.
+- **streamlink** — spawn args, proxy picking (random from config), error tail.
+- **ffmpeg** — spawn args, output URL, process exit.
+- **icecast** — ready/unreachable, mountpoint active/inactive, listener parse, `prepareMountPoint`.
+- **stream** — sequential happy path, mountpoint readiness (polling, fail-fast on exit, timeout), failure propagation, replace, TTL, process-exit handling.
 - **auth** — header, query, missing/invalid key.
 - **routes** — status codes (400/401/429/500/302).
 - **utils/isValidYoutubeUrl** — SSRF cases.

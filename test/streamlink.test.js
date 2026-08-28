@@ -66,12 +66,12 @@ describe('Streamlink', () => {
   test('getErrorTail keeps the last stderr output', async () => {
     const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const first = streamlink.getProcess();
+    const first = streamlink.process;
 
     const secondPromise = streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     first.emitClose(0); // release the replace-kill
     await secondPromise;
-    const proc = streamlink.getProcess();
+    const proc = streamlink.process;
 
     proc.stderr.emit('data', Buffer.from('line one\n'));
     proc.stderr.emit('data', Buffer.from('line two\n'));
@@ -82,7 +82,7 @@ describe('Streamlink', () => {
   test('kill terminates the current process with SIGTERM', async () => {
     const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const proc = streamlink.getProcess();
+    const proc = streamlink.process;
 
     const killed = streamlink.kill();
     assert.equal(proc.killed, true);
@@ -95,12 +95,12 @@ describe('Streamlink', () => {
   test('spawnProcess replaces a running process', async () => {
     const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const first = streamlink.getProcess();
+    const first = streamlink.process;
 
     const secondPromise = streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     first.emitClose(0); // release the replace-kill
     await secondPromise;
-    const second = streamlink.getProcess();
+    const second = streamlink.process;
 
     assert.equal(first.killed, true);
     const killed = streamlink.kill(); // still tracks the current (second) process
@@ -120,10 +120,10 @@ describe('Streamlink', () => {
     const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events });
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const proc = streamlink.getProcess();
+    const proc = streamlink.process;
     proc.emitClose(1);
 
-    assert.equal(streamlink.getProcess(), null);
+    assert.equal(streamlink.process, null);
     assert.equal(onExit.mock.callCount(), 1);
     assert.deepEqual(onExit.mock.calls[0].arguments[0], { cmd: 'streamlink', code: 1, pid: proc.pid });
   });
@@ -135,7 +135,7 @@ describe('Streamlink', () => {
     const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events });
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const proc = streamlink.getProcess();
+    const proc = streamlink.process;
     const killed = streamlink.kill();
     proc.emitClose(0);
     await killed;

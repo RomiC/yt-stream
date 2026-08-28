@@ -1,8 +1,11 @@
 import { Streamlink } from './streamlink.js';
 import { Event } from './events.js';
 import { Ffmpeg } from './ffmpeg.js';
-import { Icecast } from './icecast.js';
+import { Icecast, IcecastUnreachableError } from './icecast.js';
 import { TTLWatcher } from './ttlWatcher.js';
+
+const MOUNTPOINT_TIMEOUT = 30_000; // streamlink open + ffmpeg connecting to Icecast
+const POLL_INTERVAL = 500;
 
 /**
  * Orchestrates a single stream: streamlink → ffmpeg → Icecast.
@@ -24,10 +27,16 @@ export class Stream {
   #current = null;
   #lastUrl = null;
   #ttlWatcher;
+  #mountpointTimeout;
+  #pollInterval;
+  // Mid-start failure attribution: { cmd } recorded by the bus handler, consumed by #awaitStreamReadiness.
+  #unexpectedExit = null;
 
-  constructor({ config, logger, events }) {
+  constructor({ config, logger, events, timeouts = {} }) {
     this.#logger = logger;
     this.#events = events;
+    this.#mountpointTimeout = timeouts.mountpointTimeout ?? MOUNTPOINT_TIMEOUT;
+    this.#pollInterval = timeouts.pollInterval ?? POLL_INTERVAL;
     // The stream service owns its collaborators and can report its own
     // health; nothing outside Stream needs them.
     this.#icecast = new Icecast({ config, logger });
@@ -37,7 +46,7 @@ export class Stream {
 
     // React to unexpected process exits. Deliberate kills never emit — the
     // wrappers swallow closes of processes we killed ourselves.
-    this.#events.on(Event.processExited, () => this.#onProcessExited());
+    this.#events.on(Event.processExited, (exit) => this.#onProcessExited(exit));
 
     // TTLWatcher stops itself on expiry and emits `ttl:expired`; Stream
     // reacts by tearing down the pipeline.
@@ -58,10 +67,8 @@ export class Stream {
     }
   }
 
-  async #onProcessExited() {
-    // The pipeline is broken regardless of which process died — tear it
-    // down. The wrapper already logged the exit details; the phase guard in
-    // #stopPipeline dedupes against a manual stop racing the exit event.
+  async #onProcessExited({ cmd }) {
+    this.#unexpectedExit = { cmd };
     await this.#stopPipeline('process-exit');
     this.#ttlWatcher.stop();
   }
@@ -89,6 +96,7 @@ export class Stream {
 
     try {
       await this.#icecast.prepareMountPoint();
+      this.#unexpectedExit = null;
       this.#current = {
         url: youtubeUrl,
         phase: 'starting',
@@ -98,7 +106,7 @@ export class Stream {
       const streamlink = await this.#streamlink.spawnProcess(youtubeUrl);
       const ffmpeg = await this.#ffmpeg.spawnProcess(this.#icecast.sourceUrl);
       streamlink.pipe(ffmpeg);
-      await this.#icecast.waitForMountpoint();
+      await this.#awaitStreamReadiness();
 
       this.#current.phase = 'streaming';
       this.#current.startedAt = Date.now();
@@ -120,6 +128,37 @@ export class Stream {
     }
     await this.#stopPipeline('manual');
     this.#ttlWatcher.stop();
+  }
+
+  /**
+   * Waits for end-to-end readiness: the mountpoint active, failing fast when
+   * a pipeline process dies (with its stderr tail) or the budget runs out.
+   */
+  async #awaitStreamReadiness() {
+    const deadline = Date.now() + this.#mountpointTimeout;
+    while (true) {
+      const exit = this.#unexpectedExit;
+      if (exit) {
+        throw this.#exitError(exit.cmd);
+      }
+      const status = await this.#icecast.getStatus();
+      if (!status.icecastReachable) {
+        throw new IcecastUnreachableError();
+      }
+      if (status.mountpointActive) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('mountpoint never became active');
+      }
+      await sleep(Math.min(this.#pollInterval, deadline - Date.now()));
+    }
+  }
+
+  #exitError(cmd) {
+    const proc = cmd === this.#streamlink.command ? this.#streamlink : this.#ffmpeg;
+    const tail = proc.getErrorTail().split('\n').slice(-3).join(' | ');
+    return new Error(`${cmd} exited before the mountpoint became active${tail ? `: ${tail}` : ''}`);
   }
 
   /**
@@ -150,4 +189,8 @@ export class Stream {
       }
     };
   }
+}
+
+function sleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }

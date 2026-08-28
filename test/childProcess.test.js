@@ -29,8 +29,8 @@ describe('ChildProcess', () => {
 
       // The base class is generic — exercise it against a real, universally
       // available command (the running node binary itself).
-      async spawnProcess(args = KEEP_ALIVE) {
-        return this.spawn(args, ['ignore', 'pipe', 'ignore']);
+      async spawnProcess(args = KEEP_ALIVE, stdio = ['ignore', 'pipe', 'ignore']) {
+        return this.spawn(args, stdio);
       }
     };
   });
@@ -39,7 +39,7 @@ describe('ChildProcess', () => {
     const tool = new FakeTool({ logger: silentLogger() });
     const proc = await tool.spawnProcess();
 
-    assert.equal(tool.getProcess(), proc);
+    assert.equal(tool.process, proc);
     await tool.kill(); // cleanup
   });
 
@@ -50,7 +50,7 @@ describe('ChildProcess', () => {
       const second = await tool.spawnProcess();
 
       assert.equal(first.killed, true);
-      assert.equal(tool.getProcess(), second);
+      assert.equal(tool.process, second);
     } finally {
       await tool.kill(); // cleanup
     }
@@ -62,7 +62,7 @@ describe('ChildProcess', () => {
 
     const killed = tool.kill();
     assert.equal(proc.killed, true);
-    assert.equal(tool.getProcess(), null);
+    assert.equal(tool.process, null);
     assert.equal(await killed, true);
   });
 
@@ -84,9 +84,17 @@ describe('ChildProcess', () => {
     const proc = await tool.spawnProcess(EXIT_NOW);
     await once(proc, 'close');
 
-    assert.equal(tool.getProcess(), null);
+    assert.equal(tool.process, null);
     assert.equal(tool.lastExit?.code, 0);
     assert.equal(tool.lastExit?.cmd, process.execPath);
+  });
+
+  test('getErrorTail keeps the exited process tail for diagnostics', async () => {
+    const tool = new FakeTool({ logger: silentLogger() });
+    const proc = await tool.spawnProcess(['-e', 'console.error("kaput")'], ['ignore', 'ignore', 'pipe']);
+    await once(proc, 'close');
+
+    assert.ok(tool.getErrorTail().includes('kaput'));
   });
 
   test('a deliberate kill does not emit process:exited', async () => {

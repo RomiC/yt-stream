@@ -19,6 +19,7 @@ export class ChildProcess {
   #sigkillDelayMs;
   #proc = null;
   #errorTails = new WeakMap();
+  #lastErrorTail = '';
   // Processes we killed ourselves; their close must not reach the bus (an
   // intentional stop is not an unexpected exit).
   #killedProcs = new WeakSet();
@@ -52,6 +53,7 @@ export class ChildProcess {
     proc.on('error', (err) => this.#logger.error({ err: err.message }, `${this.#cmd} spawn error`));
     proc.on('close', (code) => {
       this.#logger.warn({ code, pid: proc.pid }, `${this.#cmd} exited`);
+      this.#lastErrorTail = this.#errorTails.get(proc) ?? '';
       if (this.#proc === proc) {
         this.#proc = null;
       }
@@ -97,22 +99,21 @@ export class ChildProcess {
     });
   }
 
-  getProcess() {
+  get process() {
     return this.#proc;
   }
 
-  /** Logger for subclasses (private fields are not inherited). */
-  getLogger() {
-    return this.#logger;
+  get command() {
+    return this.#cmd;
   }
 
   isAlive() {
     return Boolean(this.#proc);
   }
 
-  /** Tail of the current process's stderr (for failure diagnostics). */
+  /** Stderr tail of the current process; after its exit, of the last one. */
   getErrorTail() {
-    return this.#proc ? (this.#errorTails.get(this.#proc) ?? '') : '';
+    return this.#proc ? (this.#errorTails.get(this.#proc) ?? '') : this.#lastErrorTail;
   }
 
   /**

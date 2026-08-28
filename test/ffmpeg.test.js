@@ -45,12 +45,12 @@ describe('Ffmpeg', () => {
   test('kill signals SIGTERM, clears the process and resolves on exit', async () => {
     const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
     await ffmpeg.spawnProcess(SOURCE_URL);
-    const proc = ffmpeg.getProcess();
+    const proc = ffmpeg.process;
 
     const killed = ffmpeg.kill();
     assert.equal(proc.killed, true);
     assert.equal(proc.signal, 'SIGTERM');
-    assert.equal(ffmpeg.getProcess(), null);
+    assert.equal(ffmpeg.process, null);
 
     proc.emitClose(0);
     assert.equal(await killed, true);
@@ -68,10 +68,10 @@ describe('Ffmpeg', () => {
     const ffmpeg = new Ffmpeg({ logger: silentLogger(), events });
 
     await ffmpeg.spawnProcess(SOURCE_URL);
-    const proc = ffmpeg.getProcess();
+    const proc = ffmpeg.process;
     proc.emitClose(1);
 
-    assert.equal(ffmpeg.getProcess(), null);
+    assert.equal(ffmpeg.process, null);
     assert.equal(onExit.mock.callCount(), 1);
     assert.deepEqual(onExit.mock.calls[0].arguments[0], { cmd: 'ffmpeg', code: 1, pid: proc.pid });
   });
@@ -83,7 +83,7 @@ describe('Ffmpeg', () => {
     const ffmpeg = new Ffmpeg({ logger: silentLogger(), events });
 
     await ffmpeg.spawnProcess(SOURCE_URL);
-    const proc = ffmpeg.getProcess();
+    const proc = ffmpeg.process;
 
     const killed = ffmpeg.kill();
     proc.emitClose(0);
@@ -95,13 +95,13 @@ describe('Ffmpeg', () => {
   test('spawnProcess replaces a running process', async () => {
     const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
     await ffmpeg.spawnProcess(SOURCE_URL);
-    const first = ffmpeg.getProcess();
+    const first = ffmpeg.process;
 
     const second = ffmpeg.spawnProcess(SOURCE_URL); // awaits kill(first)
     first.emitClose(0); // resolve the replace-kill
     await second;
 
     assert.equal(first.killed, true);
-    assert.notEqual(ffmpeg.getProcess(), first);
+    assert.notEqual(ffmpeg.process, first);
   });
 });

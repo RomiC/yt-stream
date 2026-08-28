@@ -72,6 +72,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
     _sigkillDelayMs;
     _proc = null;
     _errorTails = new WeakMap();
+    _lastErrorTail = '';
     _killedProcs = new WeakSet();
 
     constructor({ cmd, logger, events, sigkillDelayMs = 5_000 }) {
@@ -97,6 +98,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       });
       proc.on('error', (err) => this._logger.error({ err: err.message }, `${this._cmd} spawn error`));
       proc.on('close', (code) => {
+        this._lastErrorTail = this._errorTails.get(proc) ?? '';
         if (this._proc === proc) {
           this._proc = null;
         }
@@ -138,12 +140,8 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       });
     }
 
-    getProcess() {
+    get process() {
       return this._proc;
-    }
-
-    getLogger() {
-      return this._logger;
     }
 
     isAlive() {
@@ -151,7 +149,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
     }
 
     getErrorTail() {
-      return this._proc ? (this._errorTails.get(this._proc) ?? '') : '';
+      return this._proc ? (this._errorTails.get(this._proc) ?? '') : this._lastErrorTail;
     }
 
     pipe(target) {

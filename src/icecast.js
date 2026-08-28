@@ -1,5 +1,4 @@
 const MOUNTPOINT = '/stream';
-const MOUNTPOINT_TIMEOUT = 10_000; // ffmpeg spawning and connecting to Icecast (streamlink open is already verified)
 const MOUNTPOINT_CLEAR_TIMEOUT = 10_000;
 const WAIT_POLL_INTERVAL = 500;
 
@@ -17,14 +16,12 @@ export class IcecastUnreachableError extends Error {
 export class Icecast {
   #config;
   #logger;
-  #mountpointTimeout;
   #mountpointClearTimeout;
   #waitPollInterval;
 
   constructor({ config, logger, timeouts = {} }) {
     this.#config = config;
     this.#logger = logger;
-    this.#mountpointTimeout = timeouts.mountpointTimeout ?? MOUNTPOINT_TIMEOUT;
     this.#mountpointClearTimeout = timeouts.mountpointClearTimeout ?? MOUNTPOINT_CLEAR_TIMEOUT;
     this.#waitPollInterval = timeouts.waitPollInterval ?? WAIT_POLL_INTERVAL;
   }
@@ -86,15 +83,7 @@ export class Icecast {
    * Pre-spawn readiness: confirms Icecast is reachable and that the mount is
    * free (any old source has released it). On a clean start the mount is
    * already inactive, so this returns immediately; after a stop/replace it
-   * ensures no stale source is mistaken for the new one by waitForMountpoint.
-   * A release timeout is a warning, not a failure — the post-spawn check
-   * will surface a genuinely stuck source.
-   */
-  /**
-   * Pre-spawn readiness: confirms Icecast is reachable and that the mount is
-   * free (any old source has released it). On a clean start the mount is
-   * already inactive, so this returns immediately; after a stop/replace it
-   * ensures no stale source is mistaken for the new one by waitForMountpoint.
+   * ensures no stale source is mistaken for the new pipeline's source.
    * Icecast refuses a second source on a taken mount, so a release timeout
    * fails the start — there is nothing to gain by proceeding.
    */
@@ -107,15 +96,6 @@ export class Icecast {
       }
       throw new Error('old source still connected to the mountpoint — cannot start a new stream');
     }
-  }
-
-  /**
-   * Post-spawn confirmation: waits until the mountpoint is active, i.e. our
-   * source is actually connected. Fails fast with IcecastUnreachableError if
-   * Icecast drops mid-wait.
-   */
-  async waitForMountpoint() {
-    await this.#waitForMountState(true, this.#mountpointTimeout);
   }
 
   async #waitForMountState(active, timeoutMs) {
