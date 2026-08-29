@@ -1,7 +1,6 @@
 import { describe, before, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeChildProcessBase, silentLogger } from './helpers.js';
-import { EventBus, Event } from '../src/events.js';
 
 const SOURCE_URL = 'icecast://source:testsource@icecast:8000/stream';
 
@@ -22,7 +21,7 @@ before(async (ctx) => {
 describe('Ffmpeg', () => {
   test('spawns ffmpeg with transcode args and the icecast source URL', async () => {
     spawnCalls.length = 0;
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
 
     await ffmpeg.spawnProcess(SOURCE_URL);
 
@@ -35,7 +34,7 @@ describe('Ffmpeg', () => {
   });
 
   test('isAlive reflects whether a process is running', async () => {
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     assert.equal(ffmpeg.isAlive(), false);
 
     await ffmpeg.spawnProcess(SOURCE_URL);
@@ -43,7 +42,7 @@ describe('Ffmpeg', () => {
   });
 
   test('kill signals SIGTERM, clears the process and resolves on exit', async () => {
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     await ffmpeg.spawnProcess(SOURCE_URL);
     const proc = ffmpeg.process;
 
@@ -57,15 +56,14 @@ describe('Ffmpeg', () => {
   });
 
   test('kill on idle resolves false', async () => {
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     assert.equal(await ffmpeg.kill(), false);
   });
 
-  test('close clears the process and emits process:exited', async () => {
-    const events = new EventBus();
+  test('close clears the process and notifies onExit', async () => {
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     const onExit = mock.fn();
-    events.on(Event.processExited, onExit);
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events });
+    ffmpeg.onExit(onExit);
 
     await ffmpeg.spawnProcess(SOURCE_URL);
     const proc = ffmpeg.process;
@@ -73,14 +71,13 @@ describe('Ffmpeg', () => {
 
     assert.equal(ffmpeg.process, null);
     assert.equal(onExit.mock.callCount(), 1);
-    assert.deepEqual(onExit.mock.calls[0].arguments[0], { cmd: 'ffmpeg', code: 1, pid: proc.pid });
+    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, pid: proc.pid });
   });
 
-  test('process exit after kill does not emit process:exited', async () => {
-    const events = new EventBus();
+  test('process exit after kill does not notify onExit', async () => {
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     const onExit = mock.fn();
-    events.on(Event.processExited, onExit);
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events });
+    ffmpeg.onExit(onExit);
 
     await ffmpeg.spawnProcess(SOURCE_URL);
     const proc = ffmpeg.process;
@@ -93,7 +90,7 @@ describe('Ffmpeg', () => {
   });
 
   test('spawnProcess replaces a running process', async () => {
-    const ffmpeg = new Ffmpeg({ logger: silentLogger(), events: new EventBus() });
+    const ffmpeg = new Ffmpeg({ logger: silentLogger() });
     await ffmpeg.spawnProcess(SOURCE_URL);
     const first = ffmpeg.process;
 

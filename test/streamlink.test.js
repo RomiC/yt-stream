@@ -1,7 +1,6 @@
 import { describe, before, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeChildProcessBase, silentLogger } from './helpers.js';
-import { EventBus, Event } from '../src/events.js';
 
 let spawnCalls = [];
 let Streamlink;
@@ -28,7 +27,7 @@ before(async (ctx) => {
 describe('Streamlink', () => {
   test('spawns streamlink with default-stream, retry and output args (no proxy)', async () => {
     spawnCalls.length = 0;
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
 
@@ -49,11 +48,7 @@ describe('Streamlink', () => {
   test('picks a proxy from config.proxyList and adds --http-proxy', async () => {
     spawnCalls.length = 0;
     const proxies = ['http://user:pass@proxy1:3128', 'http://proxy2:3128'];
-    const streamlink = new Streamlink({
-      config: makeConfig({ proxyList: proxies }),
-      logger: silentLogger(),
-      events: new EventBus()
-    });
+    const streamlink = new Streamlink({ config: makeConfig({ proxyList: proxies }), logger: silentLogger() });
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
 
@@ -64,7 +59,7 @@ describe('Streamlink', () => {
   });
 
   test('getErrorTail keeps the last stderr output', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const first = streamlink.process;
 
@@ -80,7 +75,7 @@ describe('Streamlink', () => {
   });
 
   test('kill terminates the current process with SIGTERM', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const proc = streamlink.process;
 
@@ -93,7 +88,7 @@ describe('Streamlink', () => {
   });
 
   test('spawnProcess replaces a running process', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const first = streamlink.process;
 
@@ -109,15 +104,14 @@ describe('Streamlink', () => {
   });
 
   test('kill on idle resolves false', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events: new EventBus() });
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     assert.equal(await streamlink.kill(), false);
   });
 
-  test('unexpected close emits process:exited with the exit code', async () => {
-    const events = new EventBus();
+  test('unexpected close notifies onExit with the exit code', async () => {
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     const onExit = mock.fn();
-    events.on(Event.processExited, onExit);
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events });
+    streamlink.onExit(onExit);
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const proc = streamlink.process;
@@ -125,14 +119,13 @@ describe('Streamlink', () => {
 
     assert.equal(streamlink.process, null);
     assert.equal(onExit.mock.callCount(), 1);
-    assert.deepEqual(onExit.mock.calls[0].arguments[0], { cmd: 'streamlink', code: 1, pid: proc.pid });
+    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, pid: proc.pid });
   });
 
-  test('a deliberate kill does not emit process:exited', async () => {
-    const events = new EventBus();
+  test('a deliberate kill does not notify onExit', async () => {
+    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
     const onExit = mock.fn();
-    events.on(Event.processExited, onExit);
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger(), events });
+    streamlink.onExit(onExit);
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const proc = streamlink.process;

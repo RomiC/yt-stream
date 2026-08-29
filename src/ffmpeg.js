@@ -7,8 +7,8 @@ import { ChildProcess } from './childProcess.js';
  * spawnProcess replaces any previous process.
  */
 export class Ffmpeg extends ChildProcess {
-  constructor({ logger, events, sigkillDelayMs }) {
-    super({ cmd: 'ffmpeg', logger, events, sigkillDelayMs });
+  constructor({ logger, sigkillDelayMs }) {
+    super({ cmd: 'ffmpeg', logger, sigkillDelayMs });
   }
 
   /**

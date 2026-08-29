@@ -22,7 +22,7 @@ describe('EventBus', () => {
     bus.on(Event.streamStarted, handler);
 
     bus.emit(Event.streamStopped, {});
-    bus.emit(Event.ttlExpired, {});
+    bus.emit(Event.streamError, {});
 
     assert.equal(handler.mock.callCount(), 0);
   });

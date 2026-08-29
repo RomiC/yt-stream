@@ -1,7 +1,6 @@
 import { describe, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { EventBus, Event } from '../src/events.js';
 import { silentLogger } from './helpers.js';
 
 describe('ChildProcess', () => {
@@ -19,11 +18,10 @@ describe('ChildProcess', () => {
 
     FakeTool = class extends ChildProcess {
       constructor(options) {
-        const events = new EventBus();
-        super({ cmd: process.execPath, ...options, events });
+        super({ cmd: process.execPath, ...options });
         this.lastExit = null;
-        events.on(Event.processExited, (payload) => {
-          this.lastExit = payload;
+        this.onExit((exit) => {
+          this.lastExit = exit;
         });
       }
 
@@ -79,14 +77,13 @@ describe('ChildProcess', () => {
     assert.equal(await tool.kill(), false);
   });
 
-  test('close clears the process and emits process:exited', async () => {
+  test('close clears the process and notifies onExit', async () => {
     const tool = new FakeTool({ logger: silentLogger() });
     const proc = await tool.spawnProcess(EXIT_NOW);
     await once(proc, 'close');
 
     assert.equal(tool.process, null);
     assert.equal(tool.lastExit?.code, 0);
-    assert.equal(tool.lastExit?.cmd, process.execPath);
   });
 
   test('getErrorTail keeps the exited process tail for diagnostics', async () => {
@@ -97,7 +94,7 @@ describe('ChildProcess', () => {
     assert.ok(tool.getErrorTail().includes('kaput'));
   });
 
-  test('a deliberate kill does not emit process:exited', async () => {
+  test('a deliberate kill does not notify onExit', async () => {
     const tool = new FakeTool({ logger: silentLogger() });
     await tool.spawnProcess();
 

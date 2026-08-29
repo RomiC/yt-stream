@@ -1,27 +1,30 @@
-import { Event } from './events.js';
-
 // TTL is configured in minutes, so a 60s poll granularity is plenty.
 const TTL_POLL_INTERVAL_MS = 60_000;
 
 /**
  * Enforces the zero-listener TTL by polling Icecast. Owns its own polling
- * loop: `watch()` starts it, and on expiry it emits `ttl:expired` and stops
- * itself. Icecast is a passive client — it knows nothing about TTL.
+ * loop: `watch()` starts it, and on expiry it notifies its `onExpired`
+ * subscribers and stops itself. Icecast is a passive client — it knows
+ * nothing about TTL.
  */
 export class TTLWatcher {
   #config;
   #logger;
-  #events;
   #icecast;
   #timer = null;
   #url = null;
   #idleSince = null;
+  #expiredCallbacks = [];
 
-  constructor({ config, logger, events, icecast }) {
+  constructor({ config, logger, icecast }) {
     this.#config = config;
     this.#logger = logger;
-    this.#events = events;
     this.#icecast = icecast;
+  }
+
+  /** Subscribes to TTL expiry notifications ({ url }). */
+  onExpired(callback) {
+    this.#expiredCallbacks.push(callback);
   }
 
   /**
@@ -61,7 +64,10 @@ export class TTLWatcher {
     } else if (Date.now() - this.#idleSince >= this.#config.streamTtlMinutes * 60_000) {
       this.#logger.info({ ttlMinutes: this.#config.streamTtlMinutes }, 'TTL expired');
       this.stop();
-      this.#events.emit(Event.ttlExpired, { url: this.#url });
+      const url = this.#url;
+      for (const callback of this.#expiredCallbacks) {
+        callback({ url });
+      }
     }
   }
 }

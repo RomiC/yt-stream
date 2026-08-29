@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { Event } from '../src/events.js';
 
 /**
  * Minimal fake of a child_process.ChildProcess for tests: an EventEmitter
@@ -59,27 +58,29 @@ export function flushAsync() {
 
 /**
  * Test double for the ChildProcess base class contract (spawn/kill/proc
- * tracking, stderr tail, process:exited emission with killed-proc
- * suppression). Used when testing Ffmpeg/Streamlink so the parent class can
- * be mocked instead of node:child_process. Records every spawn call into
- * `spawnCalls`.
+ * tracking, stderr tail, onExit notification with killed-proc suppression).
+ * Used when testing Ffmpeg/Streamlink so the parent class can be mocked
+ * instead of node:child_process. Records every spawn call into `spawnCalls`.
  */
 export function createFakeChildProcessBase({ spawnCalls }) {
   return class FakeChildProcess {
     _cmd;
     _logger;
-    _events;
     _sigkillDelayMs;
     _proc = null;
     _errorTails = new WeakMap();
     _lastErrorTail = '';
     _killedProcs = new WeakSet();
+    _exitCallbacks = [];
 
-    constructor({ cmd, logger, events, sigkillDelayMs = 5_000 }) {
+    constructor({ cmd, logger, sigkillDelayMs = 5_000 }) {
       this._cmd = cmd;
       this._logger = logger;
-      this._events = events;
       this._sigkillDelayMs = sigkillDelayMs;
+    }
+
+    onExit(callback) {
+      this._exitCallbacks.push(callback);
     }
 
     async spawn(args, stdio) {
@@ -106,7 +107,10 @@ export function createFakeChildProcessBase({ spawnCalls }) {
           this._killedProcs.delete(proc);
           return;
         }
-        this._events?.emit(Event.processExited, { cmd: this._cmd, code, pid: proc.pid });
+        const exit = { code, pid: proc.pid };
+        for (const callback of this._exitCallbacks) {
+          callback(exit);
+        }
       });
 
       return proc;

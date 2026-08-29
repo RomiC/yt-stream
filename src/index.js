@@ -17,7 +17,6 @@ const streamService = new Stream({ config, logger: app.log, events });
 events.on(Event.streamStarted, ({ url }) => app.log.info({ url }, 'stream started'));
 events.on(Event.streamStopped, ({ url, reason }) => app.log.info({ url, reason }, 'stream stopped'));
 events.on(Event.streamError, ({ url, error }) => app.log.error({ url, err: error }, 'stream error'));
-events.on(Event.ttlExpired, ({ url }) => app.log.info({ url }, 'ttl expired'));
 
 if (config.icecast.sourcePassword === 'secret' || config.icecast.adminPassword === 'admin') {
   app.log.warn(

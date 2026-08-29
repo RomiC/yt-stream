@@ -1,21 +1,18 @@
 import { EventEmitter } from 'node:events';
 
 /**
- * The domain events emitted on the bus (PRD §4.3). Subscribe and emit with
- * these constants project-wide — never raw string literals.
+ * The outward notifications emitted by Stream on the bus (PRD §4.3).
+ * Subscribe and emit with these constants project-wide — never raw string
+ * literals.
  *
  *   streamStarted     { url }
  *   streamStopped     { url, reason: 'manual'|'replaced'|'process-exit'|'ttl' }
  *   streamError       { url, error }
- *   ttlExpired        { url }
- *   processExited     { cmd, code, pid }  (unexpected process exit)
  */
 export const Event = Object.freeze({
   streamStarted: 'stream:started',
   streamStopped: 'stream:stopped',
-  streamError: 'stream:error',
-  ttlExpired: 'ttl:expired',
-  processExited: 'process:exited'
+  streamError: 'stream:error'
 });
 
 /**

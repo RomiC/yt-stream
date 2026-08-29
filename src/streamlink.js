@@ -22,8 +22,8 @@ export class Streamlink extends ChildProcess {
   #config;
   #logger;
 
-  constructor({ config, logger, events, sigkillDelayMs }) {
-    super({ cmd: 'streamlink', logger, events, sigkillDelayMs });
+  constructor({ config, logger, sigkillDelayMs }) {
+    super({ cmd: 'streamlink', logger, sigkillDelayMs });
     this.#config = config;
     this.#logger = logger;
   }

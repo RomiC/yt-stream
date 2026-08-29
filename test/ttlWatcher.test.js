@@ -1,32 +1,29 @@
 import { describe, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { TTLWatcher } from '../src/ttlWatcher.js';
-import { EventBus, Event } from '../src/events.js';
 import { silentLogger, flushAsync } from './helpers.js';
 
 describe('TTLWatcher', () => {
   const URL = 'https://youtube.com/watch?v=abc';
 
   function makeWatcher(overrides = {}) {
-    const events = new EventBus();
     const deps = {
       config: { streamTtlMinutes: 1 },
       logger: silentLogger(),
-      events,
       icecast: {
         getStatus: async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 })
       },
       ...overrides
     };
     const watcher = new TTLWatcher(deps);
-    return { watcher, events, getStatus: deps.icecast.getStatus };
+    const onExpired = mock.fn();
+    watcher.onExpired(onExpired);
+    return { watcher, onExpired, getStatus: deps.icecast.getStatus };
   }
 
-  test('emits ttl:expired when zero listeners persist past the TTL', async (ctx) => {
+  test('notifies onExpired when zero listeners persist past the TTL', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
-    const { watcher, events } = makeWatcher();
-    const onTtlExpired = mock.fn();
-    events.on(Event.ttlExpired, onTtlExpired);
+    const { watcher, onExpired: onTtlExpired } = makeWatcher();
 
     watcher.watch(URL);
     ctx.mock.timers.tick(60_000); // first tick: idle timer starts
@@ -41,13 +38,11 @@ describe('TTLWatcher', () => {
   test('listeners returning resets the idle timer', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
     let listeners = 0;
-    const { watcher, events } = makeWatcher({
+    const { watcher, onExpired: onTtlExpired } = makeWatcher({
       icecast: {
         getStatus: async () => ({ icecastReachable: true, mountpointActive: true, listeners })
       }
     });
-    const onTtlExpired = mock.fn();
-    events.on(Event.ttlExpired, onTtlExpired);
 
     watcher.watch(URL);
     ctx.mock.timers.tick(60_000); // idle starts
@@ -64,13 +59,11 @@ describe('TTLWatcher', () => {
 
   test('unreachable Icecast does not accumulate idle time', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
-    const { watcher, events } = makeWatcher({
+    const { watcher, onExpired: onTtlExpired } = makeWatcher({
       icecast: {
         getStatus: async () => ({ icecastReachable: false, mountpointActive: false, listeners: 0 })
       }
     });
-    const onTtlExpired = mock.fn();
-    events.on(Event.ttlExpired, onTtlExpired);
 
     watcher.watch(URL);
     ctx.mock.timers.tick(60_000);
@@ -108,9 +101,7 @@ describe('TTLWatcher', () => {
 
   test('watch is idempotent and resets the idle state', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
-    const { watcher, events } = makeWatcher();
-    const onTtlExpired = mock.fn();
-    events.on(Event.ttlExpired, onTtlExpired);
+    const { watcher, onExpired: onTtlExpired } = makeWatcher();
 
     watcher.watch(URL);
     ctx.mock.timers.tick(60_000); // idle starts

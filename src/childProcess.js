@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { Event } from './events.js';
 
 const SIGKILL_AFTER_MS = 5_000;
 const ERR_TAIL_LIMIT = 2_000;
@@ -9,25 +8,24 @@ const ERR_TAIL_LIMIT = 2_000;
  * ffmpeg). Provides spawn tracking, SIGTERM→SIGKILL kill that resolves once
  * the process has exited, stderr tail capture, and close/error logging.
  *
- * Subclasses call spawn() with their args/stdio; unexpected exits emit
- * `process:exited` on the event bus so a coordinator can react.
+ * Subclasses call spawn() with their args/stdio; unexpected exits are
+ * reported to onExit subscribers so the owner can react.
  */
 export class ChildProcess {
   #cmd;
   #logger;
-  #events;
   #sigkillDelayMs;
   #proc = null;
   #errorTails = new WeakMap();
   #lastErrorTail = '';
-  // Processes we killed ourselves; their close must not reach the bus (an
+  // Processes we killed ourselves; their close is not news (an
   // intentional stop is not an unexpected exit).
   #killedProcs = new WeakSet();
+  #exitCallbacks = [];
 
-  constructor({ cmd, logger, events, sigkillDelayMs = SIGKILL_AFTER_MS }) {
+  constructor({ cmd, logger, sigkillDelayMs = SIGKILL_AFTER_MS }) {
     this.#cmd = cmd;
     this.#logger = logger;
-    this.#events = events;
     this.#sigkillDelayMs = sigkillDelayMs;
   }
 
@@ -61,7 +59,10 @@ export class ChildProcess {
         this.#killedProcs.delete(proc);
         return;
       }
-      this.#events?.emit(Event.processExited, { cmd: this.#cmd, code, pid: proc.pid });
+      const exit = { code, pid: proc.pid };
+      for (const callback of this.#exitCallbacks) {
+        callback(exit);
+      }
     });
 
     return proc;
@@ -105,6 +106,11 @@ export class ChildProcess {
 
   get command() {
     return this.#cmd;
+  }
+
+  /** Subscribes to unexpected exits (deliberate kills stay silent). */
+  onExit(callback) {
+    this.#exitCallbacks.push(callback);
   }
 
   isAlive() {

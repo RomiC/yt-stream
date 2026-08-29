@@ -51,9 +51,21 @@ before(async (ctx) => {
   ctx.mock.module('../src/streamlink.js', {
     exports: {
       Streamlink: class FakeStreamlink {
+        exitCallbacks = [];
+
         constructor() {
           this.spawned = false;
           streamlinkInstances.push(this);
+        }
+
+        onExit(callback) {
+          this.exitCallbacks.push(callback);
+        }
+
+        die(code = 1) {
+          for (const callback of this.exitCallbacks) {
+            callback({ code, pid: 4242 });
+          }
         }
 
         get command() {
@@ -86,9 +98,21 @@ before(async (ctx) => {
   ctx.mock.module('../src/ffmpeg.js', {
     exports: {
       Ffmpeg: class FakeFfmpeg {
+        exitCallbacks = [];
+
         constructor() {
           this.spawned = false;
           ffmpegInstances.push(this);
+        }
+
+        onExit(callback) {
+          this.exitCallbacks.push(callback);
+        }
+
+        die(code = 1) {
+          for (const callback of this.exitCallbacks) {
+            callback({ code, pid: 4242 });
+          }
         }
 
         get command() {
@@ -118,10 +142,22 @@ before(async (ctx) => {
   ctx.mock.module('../src/ttlWatcher.js', {
     exports: {
       TTLWatcher: class FakeTTLWatcher {
+        expiredCallbacks = [];
+
         constructor() {
           this.watched = [];
           this.stops = 0;
           ttlWatcherInstances.push(this);
+        }
+
+        onExpired(callback) {
+          this.expiredCallbacks.push(callback);
+        }
+
+        expire() {
+          for (const callback of this.expiredCallbacks) {
+            callback({ url: this.watched.at(-1) });
+          }
         }
 
         watch(url) {
@@ -215,7 +251,7 @@ describe('Stream', () => {
       streamlink.errorTail = 'error: No playable streams found for this URL\n';
       streamlink.spawnProcess = async () => {
         streamlink.spawned = true;
-        events.emit(Event.processExited, { cmd: 'streamlink', code: 1, pid: 4242 });
+        streamlink.die();
         return streamlink;
       };
 
@@ -229,11 +265,11 @@ describe('Stream', () => {
     });
 
     test('a mid-start process exit is attributed to the dead process, not the killed survivor', async () => {
-      const { stream, events, icecast, ffmpeg } = createStream({ pollInterval: 1 });
+      const { stream, icecast, ffmpeg } = createStream({ pollInterval: 1 });
       icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
       ffmpeg.spawnProcess = async () => {
         ffmpeg.spawned = true;
-        events.emit(Event.processExited, { cmd: 'ffmpeg', code: 1, pid: 99 });
+        ffmpeg.die();
       };
 
       await assert.rejects(stream.start(URL), /ffmpeg exited before the mountpoint became active/);
@@ -359,12 +395,12 @@ describe('Stream', () => {
 
   describe('events', () => {
     test('unexpected process exit emits stream:stopped with reason process-exit', async () => {
-      const { stream, events, ttlWatcher } = createStream();
+      const { stream, events, ttlWatcher, ffmpeg } = createStream();
       const onStopped = mock.fn();
       events.on(Event.streamStopped, onStopped);
 
       await stream.start(URL);
-      events.emit(Event.processExited, { cmd: 'ffmpeg', code: 1, pid: 99 });
+      ffmpeg.die();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);
@@ -372,13 +408,13 @@ describe('Stream', () => {
       assert.equal(ttlWatcher.stops, 1);
     });
 
-    test('ttl:expired stops the stream with reason ttl', async () => {
-      const { stream, events } = createStream();
+    test('TTL expiry stops the stream with reason ttl', async () => {
+      const { stream, events, ttlWatcher } = createStream();
       const onStopped = mock.fn();
       events.on(Event.streamStopped, onStopped);
 
       await stream.start(URL);
-      events.emit(Event.ttlExpired, { url: URL });
+      ttlWatcher.expire();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);
@@ -386,13 +422,13 @@ describe('Stream', () => {
     });
 
     test('a late process-exit after a manual stop does not emit stream:stopped twice', async () => {
-      const { stream, events } = createStream();
+      const { stream, events, streamlink } = createStream();
       const onStopped = mock.fn();
       events.on(Event.streamStopped, onStopped);
 
       await stream.start(URL);
       await stream.stop();
-      events.emit(Event.processExited, { cmd: 'streamlink', code: 1, pid: 99 });
+      streamlink.die();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);

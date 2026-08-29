@@ -102,14 +102,14 @@ Replace the monolithic `stream-manager.js` with focused modules:
 
 ```
 src/
-├── events.js         # event bus (pub/sub) + exported Event map
+├── events.js         # event bus + exported Event map (stream:* notifications)
 ├── childProcess.js   # base class: process lifecycle, kill, stderr tail
 ├── streamlink.js     # streamlink process: fetch the stream
 ├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
 ├── icecast.js        # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
 ├── healthMonitor.js  # /health facade: status snapshot + ok/failure verdict
 ├── stream.js         # orchestration: pipeline, mountpoint readiness, TTL watcher, status snapshot
-├── ttlWatcher.js     # zero-listener TTL: polls Icecast, emits ttl:expired
+├── ttlWatcher.js     # zero-listener TTL: polls Icecast, notifies owner via onExpired
 ├── auth.js           # API key validation (Fastify hook)
 ├── routes.js         # HTTP handlers
 ├── config.js         # env config
@@ -139,19 +139,17 @@ current = {
 5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits (with its stderr tail)
 6. any step throwing fails the request (`500`); no retries
 
-Background concerns are handled without a state machine: the zero-listener **TTL** is enforced by a dedicated **TTLWatcher** (created by Stream, which passes it the Icecast client) — it runs only while a stream is active, polls Icecast for the listener count every 60s (TTL is configured in minutes; Icecast is a passive client and knows nothing about TTL), and on expiry emits `ttl:expired` and stops itself; Stream reacts by stopping the pipeline. Unexpected **process exits** arrive via the event bus; a stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL).
+Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL).
 
 ### 4.3 Event bus
 
-A small pub/sub bus decouples the modules:
+A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via `onExit`/`onExpired`, never through the bus.
 
 | Event               | Emitted by            | Consumed by      |
 | ------------------- | --------------------- | ---------------- |
 | `stream:started`    | stream                | logging          |
 | `stream:stopped`    | stream                | logging          |
 | `stream:error`      | stream                | logging          |
-| `ttl:expired`       | ttlWatcher (on expiry) | stream stops the pipeline |
-| `process:exited`    | process wrappers      | stops the stream |
 
 Every pipeline teardown declares its reason — `stream:stopped` carries one of `manual`, `replaced`, `process-exit` or `ttl`. A replace records the old stream's end **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for; a failed start itself surfaces as `stream:error` (it never emitted `stream:started`).
 

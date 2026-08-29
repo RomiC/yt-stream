@@ -11,9 +11,10 @@ const POLL_INTERVAL = 500;
  * Orchestrates a single stream: streamlink → ffmpeg → Icecast.
  *
  * No state machine — the state is a plain in-memory object (`current`) and
- * control flow is sequential `async/await`. Background concerns (TTL,
- * process exits) are handled through the event bus: TTLWatcher emits
- * `ttl:expired`, process wrappers emit `process:exited`.
+ * control flow is sequential `async/await`. Background concerns are observed
+ * directly: process wrappers report unexpected exits via `onExit`, the TTL
+ * watcher via `onExpired`. The bus carries only outward stream:*
+ * notifications.
  *
  * `current` = null (idle) or
  *   { url, phase: 'starting'|'streaming'|'stopped', startedAt }
@@ -40,17 +41,17 @@ export class Stream {
     // The stream service owns its collaborators and can report its own
     // health; nothing outside Stream needs them.
     this.#icecast = new Icecast({ config, logger });
-    this.#streamlink = new Streamlink({ config, logger, events });
-    this.#ffmpeg = new Ffmpeg({ logger, events });
-    this.#ttlWatcher = new TTLWatcher({ config, logger, events, icecast: this.#icecast });
+    this.#streamlink = new Streamlink({ config, logger });
+    this.#ffmpeg = new Ffmpeg({ logger });
+    this.#ttlWatcher = new TTLWatcher({ config, logger, icecast: this.#icecast });
 
-    // React to unexpected process exits. Deliberate kills never emit — the
-    // wrappers swallow closes of processes we killed ourselves.
-    this.#events.on(Event.processExited, (exit) => this.#onProcessExited(exit));
+    // Deliberate kills never fire onExit — the wrappers swallow closes of
+    // processes we killed ourselves.
+    this.#streamlink.onExit((exit) => this.#onProcessExited(this.#streamlink, exit));
+    this.#ffmpeg.onExit((exit) => this.#onProcessExited(this.#ffmpeg, exit));
 
-    // TTLWatcher stops itself on expiry and emits `ttl:expired`; Stream
-    // reacts by tearing down the pipeline.
-    this.#events.on(Event.ttlExpired, () => this.#onTtlExpired());
+    // TTLWatcher stops itself on expiry and notifies; Stream tears down.
+    this.#ttlWatcher.onExpired(() => this.#onTtlExpired());
   }
 
   /**
@@ -67,8 +68,8 @@ export class Stream {
     }
   }
 
-  async #onProcessExited({ cmd }) {
-    this.#unexpectedExit = { cmd };
+  async #onProcessExited(wrapper) {
+    this.#unexpectedExit = wrapper;
     await this.#stopPipeline('process-exit');
     this.#ttlWatcher.stop();
   }
@@ -139,7 +140,7 @@ export class Stream {
     while (true) {
       const exit = this.#unexpectedExit;
       if (exit) {
-        throw this.#exitError(exit.cmd);
+        throw this.#exitError(exit);
       }
       const status = await this.#icecast.getStatus();
       if (!status.icecastReachable) {
@@ -155,10 +156,9 @@ export class Stream {
     }
   }
 
-  #exitError(cmd) {
-    const proc = cmd === this.#streamlink.command ? this.#streamlink : this.#ffmpeg;
-    const tail = proc.getErrorTail().split('\n').slice(-3).join(' | ');
-    return new Error(`${cmd} exited before the mountpoint became active${tail ? `: ${tail}` : ''}`);
+  #exitError(wrapper) {
+    const tail = wrapper.getErrorTail().split('\n').slice(-3).join(' | ');
+    return new Error(`${wrapper.command} exited before the mountpoint became active${tail ? `: ${tail}` : ''}`);
   }
 
   /**
