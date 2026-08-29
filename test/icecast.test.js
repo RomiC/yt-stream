@@ -97,11 +97,11 @@ describe('Icecast', () => {
   describe('URLs', () => {
     test('sourceUrl and streamUrl getters are derived from config', () => {
       const icecast = makeIcecast({
-        icecast: { host: 'ic', port: 8000, sourcePassword: 'secret', publicPort: 8871 },
+        icecast: { host: 'ic', port: 8000, sourcePassword: 'icecast-password', publicPort: 8871 },
         publicHostname: 'yt.example.com'
       });
 
-      assert.equal(icecast.sourceUrl, 'icecast://source:testsource@ic:8000/stream');
+      assert.equal(icecast.sourceUrl, 'icecast://source:icecast-password@ic:8000/stream');
       assert.equal(icecast.streamUrl, 'http://yt.example.com:8871/stream');
     });
   });

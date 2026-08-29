@@ -33,8 +33,8 @@ describe('Config', () => {
     const config = new Config({
       PORT: '9000',
       ICECAST_HOST: 'ic.example',
-      ICECAST_SOURCE_PASSWORD: 'srcpw',
-      ICECAST_ADMIN_PASSWORD: 'adminpw',
+      ICECAST_SOURCE_PASSWORD: 'icecast-source-password',
+      ICECAST_ADMIN_PASSWORD: 'icecast-admin-password',
       ICECAST_PORT: '8871',
       PUBLIC_HOSTNAME: 'yt.example.com',
       LOG_LEVEL: 'debug',
@@ -45,8 +45,8 @@ describe('Config', () => {
 
     assert.equal(config.port, 9000);
     assert.equal(config.icecast.host, 'ic.example');
-    assert.equal(config.icecast.sourcePassword, 'srcpw');
-    assert.equal(config.icecast.adminPassword, 'adminpw');
+    assert.equal(config.icecast.sourcePassword, 'icecast-source-password');
+    assert.equal(config.icecast.adminPassword, 'icecast-admin-password');
     assert.equal(config.icecast.publicPort, 8871);
     assert.equal(config.publicHostname, 'yt.example.com');
     assert.equal(config.logLevel, 'debug');
