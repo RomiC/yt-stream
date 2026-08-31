@@ -113,6 +113,32 @@ describe('TTLWatcher', () => {
     assert.equal(getStatus.mock.callCount(), 3); // two immediate ticks + one poll
   });
 
+  test('a stale poll from a previous watch does not disturb the new one', async (ctx) => {
+    ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
+    let releaseOld;
+    const oldPoll = new Promise((resolve) => {
+      releaseOld = resolve;
+    });
+    let calls = 0;
+    const getStatus = mock.fn(async () => {
+      calls += 1;
+      return calls === 1 ? oldPoll : { icecastReachable: true, mountpointActive: true, listeners: 0 };
+    });
+    const { watcher, onExpired: onTtlExpired } = makeWatcher({ icecast: { getStatus } });
+
+    watcher.watch('https://youtube.com/watch?v=old'); // immediate tick parks on oldPoll
+    watcher.watch('https://youtube.com/watch?v=new'); // re-watch: the new clock starts
+    await flushAsync();
+    releaseOld({ icecastReachable: true, mountpointActive: true, listeners: 5 }); // stale: listeners present
+    await flushAsync();
+
+    ctx.mock.timers.tick(60_000); // next poll of the NEW watch: TTL elapsed
+    await flushAsync();
+
+    assert.equal(onTtlExpired.mock.callCount(), 1);
+    assert.equal(onTtlExpired.mock.calls[0].arguments[0].url, 'https://youtube.com/watch?v=new');
+  });
+
   test('watch is a no-op when TTL is disabled', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval'] });
     const getStatus = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));

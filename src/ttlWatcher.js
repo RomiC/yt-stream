@@ -37,11 +37,12 @@ export class TTLWatcher {
     if (this.#config.streamTtlMinutes === 0) {
       return;
     }
-    const tick = () => this.#tick().catch((err) => this.#logger.error({ err: err.message }, 'ttl watcher error'));
-    tick();
-    const timer = setInterval(tick, TTL_POLL_INTERVAL_MS);
+    const tick = (timer) =>
+      this.#tick(timer).catch((err) => this.#logger.error({ err: err.message }, 'ttl watcher error'));
+    const timer = setInterval(() => tick(timer), TTL_POLL_INTERVAL_MS);
     timer.unref();
     this.#timer = timer;
+    tick(timer); // prime the idle clock at watch() time, not at the first poll
   }
 
   /** Stops watching (idempotent). */
@@ -53,8 +54,13 @@ export class TTLWatcher {
     this.#idleSince = null;
   }
 
-  async #tick() {
+  async #tick(timer) {
     const iceStatus = await this.#icecast.getStatus();
+
+    // A poll from a previous watch must not touch the new idle state.
+    if (this.#timer !== timer) {
+      return;
+    }
     // Only confirmed listeners reset the idle timer; an unreachable Icecast
     // (admin, source and listeners share port 8000) means nobody can listen.
     if (iceStatus.listeners > 0) {
