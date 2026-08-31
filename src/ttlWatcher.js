@@ -37,9 +37,9 @@ export class TTLWatcher {
     if (this.#config.streamTtlMinutes === 0) {
       return;
     }
-    const timer = setInterval(() => {
-      this.#tick().catch((err) => this.#logger.error({ err: err.message }, 'ttl watcher error'));
-    }, TTL_POLL_INTERVAL_MS);
+    const tick = () => this.#tick().catch((err) => this.#logger.error({ err: err.message }, 'ttl watcher error'));
+    tick();
+    const timer = setInterval(tick, TTL_POLL_INTERVAL_MS);
     timer.unref();
     this.#timer = timer;
   }
@@ -61,7 +61,7 @@ export class TTLWatcher {
       this.#idleSince = null;
       return;
     }
-    if (!this.#idleSince) {
+    if (this.#idleSince === null) {
       this.#idleSince = Date.now();
     } else if (Date.now() - this.#idleSince >= this.#config.streamTtlMinutes * 60_000) {
       this.#logger.info({ ttlMinutes: this.#config.streamTtlMinutes }, 'TTL expired');

@@ -26,9 +26,20 @@ describe('TTLWatcher', () => {
     const { watcher, onExpired: onTtlExpired } = makeWatcher();
 
     watcher.watch(URL);
-    ctx.mock.timers.tick(60_000); // first tick: idle timer starts
+    await flushAsync(); // immediate tick: idle clock starts at t=0
+    ctx.mock.timers.tick(60_000); // one poll interval = TTL elapsed → expiry
     await flushAsync();
-    ctx.mock.timers.tick(60_000); // 61s of zero listeners: TTL expired
+
+    assert.equal(onTtlExpired.mock.callCount(), 1);
+  });
+
+  test('expires exactly at the TTL, not one poll interval later', async (ctx) => {
+    ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
+    const { watcher, onExpired: onTtlExpired } = makeWatcher();
+
+    watcher.watch(URL);
+    await flushAsync(); // idle clock starts at watch() time, not at the first poll
+    ctx.mock.timers.tick(60_000); // a single poll interval = the whole TTL
     await flushAsync();
 
     assert.equal(onTtlExpired.mock.callCount(), 1);
@@ -45,13 +56,17 @@ describe('TTLWatcher', () => {
     });
 
     watcher.watch(URL);
-    ctx.mock.timers.tick(60_000); // idle starts
-    await flushAsync();
-
+    await flushAsync(); // immediate tick: idle starts
     listeners = 1;
-    ctx.mock.timers.tick(60_000); // listeners returned → idle reset
+    ctx.mock.timers.tick(60_000); // t=60: listeners present → idle reset
     await flushAsync();
-    ctx.mock.timers.tick(60_000); // minutes pass, but listeners are present
+    listeners = 0;
+    ctx.mock.timers.tick(60_000); // t=120: idle restarts
+    await flushAsync();
+    ctx.mock.timers.tick(30_000); // t=150: 30s idle, no poll fires
+    await flushAsync();
+    listeners = 1;
+    ctx.mock.timers.tick(30_000); // t=180: poll fires, listeners present → reset
     await flushAsync();
 
     assert.equal(onTtlExpired.mock.callCount(), 0);
@@ -66,12 +81,36 @@ describe('TTLWatcher', () => {
     });
 
     watcher.watch(URL);
+    await flushAsync(); // immediate tick: idle starts at t=0
     ctx.mock.timers.tick(60_000);
     await flushAsync();
     ctx.mock.timers.tick(60_000);
     await flushAsync();
 
     assert.equal(onTtlExpired.mock.callCount(), 1);
+  });
+
+  test('re-watching resets idle time and does not stack intervals', async (ctx) => {
+    ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
+    const getStatus = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
+    const { watcher, onExpired: onTtlExpired } = makeWatcher({ icecast: { getStatus } });
+
+    watcher.watch(URL);
+    await flushAsync(); // immediate tick at t=0: idle starts
+    ctx.mock.timers.tick(30_000); // t=30: 30s of idle, no poll fires
+
+    watcher.watch(URL); // re-watch: idle reset, interval re-armed
+    await flushAsync(); // immediate tick at t=30
+    ctx.mock.timers.tick(30_000); // t=60: the OLD interval would fire here
+    await flushAsync();
+
+    assert.equal(onTtlExpired.mock.callCount(), 0); // no carry-over, no stacked interval
+
+    ctx.mock.timers.tick(30_000); // t=90: the new interval fires, idle elapsed = 60s
+    await flushAsync();
+
+    assert.equal(onTtlExpired.mock.callCount(), 1);
+    assert.equal(getStatus.mock.callCount(), 3); // two immediate ticks + one poll
   });
 
   test('watch is a no-op when TTL is disabled', async (ctx) => {
@@ -91,27 +130,12 @@ describe('TTLWatcher', () => {
     const { watcher } = makeWatcher({ icecast: { getStatus } });
 
     watcher.watch(URL);
+    await flushAsync(); // immediate tick
     ctx.mock.timers.tick(60_000);
     await flushAsync();
     watcher.stop();
     ctx.mock.timers.tick(600_000);
 
-    assert.equal(getStatus.mock.callCount(), 1);
-  });
-
-  test('watch is idempotent and resets the idle state', async (ctx) => {
-    ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
-    const { watcher, onExpired: onTtlExpired } = makeWatcher();
-
-    watcher.watch(URL);
-    ctx.mock.timers.tick(60_000); // idle starts
-    await flushAsync();
-    watcher.watch(URL); // a new stream: idle time must not carry over
-    ctx.mock.timers.tick(60_000); // but only one interval fires per period
-    await flushAsync();
-    ctx.mock.timers.tick(60_000);
-    await flushAsync();
-
-    assert.equal(onTtlExpired.mock.callCount(), 1);
+    assert.equal(getStatus.mock.callCount(), 2); // immediate + first interval
   });
 });
