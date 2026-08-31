@@ -139,7 +139,7 @@ current = {
 5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits (with its stderr tail)
 6. any step throwing fails the request (`500`); no retries
 
-Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL).
+Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
 
 ### 4.3 Event bus
 

@@ -57,7 +57,7 @@ describe('TTLWatcher', () => {
     assert.equal(onTtlExpired.mock.callCount(), 0);
   });
 
-  test('unreachable Icecast does not accumulate idle time', async (ctx) => {
+  test('unreachable Icecast still accumulates idle time (TTL applies)', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval', 'Date'] });
     const { watcher, onExpired: onTtlExpired } = makeWatcher({
       icecast: {
@@ -71,7 +71,7 @@ describe('TTLWatcher', () => {
     ctx.mock.timers.tick(60_000);
     await flushAsync();
 
-    assert.equal(onTtlExpired.mock.callCount(), 0);
+    assert.equal(onTtlExpired.mock.callCount(), 1);
   });
 
   test('watch is a no-op when TTL is disabled', async (ctx) => {

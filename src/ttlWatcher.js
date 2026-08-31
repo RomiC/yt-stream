@@ -55,7 +55,9 @@ export class TTLWatcher {
 
   async #tick() {
     const iceStatus = await this.#icecast.getStatus();
-    if (!iceStatus.icecastReachable || iceStatus.listeners > 0) {
+    // Only confirmed listeners reset the idle timer; an unreachable Icecast
+    // (admin, source and listeners share port 8000) means nobody can listen.
+    if (iceStatus.listeners > 0) {
       this.#idleSince = null;
       return;
     }
