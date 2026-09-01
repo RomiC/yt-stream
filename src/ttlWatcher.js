@@ -8,17 +8,15 @@ const TTL_POLL_INTERVAL_MS = 60_000;
  * nothing about TTL.
  */
 export class TTLWatcher {
-  #config;
-  #logger;
+  #streamTtlMinutes;
   #icecast;
   #timer = null;
   #url = null;
   #idleSince = null;
   #expiredCallbacks = [];
 
-  constructor({ config, logger, icecast }) {
-    this.#config = config;
-    this.#logger = logger;
+  constructor({ streamTtlMinutes, icecast }) {
+    this.#streamTtlMinutes = streamTtlMinutes;
     this.#icecast = icecast;
   }
 
@@ -34,11 +32,10 @@ export class TTLWatcher {
   watch(url) {
     this.stop();
     this.#url = url;
-    if (this.#config.streamTtlMinutes === 0) {
+    if (this.#streamTtlMinutes === 0) {
       return;
     }
-    const tick = (timer) =>
-      this.#tick(timer).catch((err) => this.#logger.error({ err: err.message }, 'ttl watcher error'));
+    const tick = (timer) => void this.#tick(timer);
     const timer = setInterval(() => tick(timer), TTL_POLL_INTERVAL_MS);
     timer.unref();
     this.#timer = timer;
@@ -69,7 +66,7 @@ export class TTLWatcher {
     }
     if (this.#idleSince === null) {
       this.#idleSince = Date.now();
-    } else if (Date.now() - this.#idleSince >= this.#config.streamTtlMinutes * 60_000) {
+    } else if (Date.now() - this.#idleSince >= this.#streamTtlMinutes * 60_000) {
       this.stop();
       const url = this.#url;
       for (const callback of this.#expiredCallbacks) {

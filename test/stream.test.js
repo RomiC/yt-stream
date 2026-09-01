@@ -11,6 +11,8 @@ let icecastInstances = [];
 let streamlinkInstances = [];
 let ffmpegInstances = [];
 let ttlWatcherInstances = [];
+let StreamlinkFake;
+let FfmpegFake;
 let Stream;
 
 before(async (ctx) => {
@@ -48,92 +50,103 @@ before(async (ctx) => {
     }
   });
 
-  ctx.mock.module('../src/streamlink.js', {
-    exports: {
-      Streamlink: class FakeStreamlink {
-        exitCallbacks = [];
+  class FakeStreamlink {
+    static next = null;
+    exitCallbacks = [];
+    spawnCalls = [];
+    pipeCalls = [];
 
-        constructor() {
-          this.spawned = false;
-          streamlinkInstances.push(this);
-        }
+    constructor() {
+      this.spawned = false;
+      // Overrides installed via StreamlinkFake.next apply to the current set only.
+      Object.assign(this, FakeStreamlink.next ?? {});
+      FakeStreamlink.next = null;
+      streamlinkInstances.push(this);
+    }
 
-        onExit(callback) {
-          this.exitCallbacks.push(callback);
-        }
+    onExit(callback) {
+      this.exitCallbacks.push(callback);
+    }
 
-        die(code = 1, signal = null) {
-          for (const callback of this.exitCallbacks) {
-            callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
-          }
-        }
-
-        get command() {
-          return 'streamlink';
-        }
-
-        get lastProxy() {
-          return null;
-        }
-
-        async spawnProcess() {
-          this.spawned = true;
-          return this;
-        }
-
-        pipe() {}
-
-        async kill() {
-          this.spawned = false;
-          return true;
-        }
-
-        isAlive() {
-          return this.spawned;
-        }
+    die(code = 1, signal = null) {
+      for (const callback of this.exitCallbacks) {
+        callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
       }
     }
-  });
 
-  ctx.mock.module('../src/ffmpeg.js', {
-    exports: {
-      Ffmpeg: class FakeFfmpeg {
-        exitCallbacks = [];
+    get command() {
+      return 'streamlink';
+    }
 
-        constructor() {
-          this.spawned = false;
-          ffmpegInstances.push(this);
-        }
+    get lastProxy() {
+      return null;
+    }
 
-        onExit(callback) {
-          this.exitCallbacks.push(callback);
-        }
+    async spawnProcess(url) {
+      this.spawnCalls.push(url);
+      this.spawned = true;
+      return this;
+    }
 
-        die(code = 1, signal = null) {
-          for (const callback of this.exitCallbacks) {
-            callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
-          }
-        }
+    pipe(target) {
+      this.pipeCalls.push(target);
+    }
 
-        get command() {
-          return 'ffmpeg';
-        }
+    async kill() {
+      this.spawned = false;
+      return true;
+    }
 
-        async spawnProcess() {
-          this.spawned = true;
-        }
+    isAlive() {
+      return this.spawned;
+    }
+  }
+  StreamlinkFake = FakeStreamlink;
+  ctx.mock.module('../src/streamlink.js', { exports: { Streamlink: StreamlinkFake } });
 
-        async kill() {
-          this.spawned = false;
-          return true;
-        }
+  class FakeFfmpeg {
+    static next = null;
+    exitCallbacks = [];
+    spawnCalls = [];
 
-        isAlive() {
-          return this.spawned;
-        }
+    constructor() {
+      this.spawned = false;
+      Object.assign(this, FfmpegFake.next ?? {});
+      FfmpegFake.next = null;
+      ffmpegInstances.push(this);
+    }
+
+    onExit(callback) {
+      this.exitCallbacks.push(callback);
+    }
+
+    die(code = 1, signal = null) {
+      for (const callback of this.exitCallbacks) {
+        callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
       }
     }
-  });
+
+    get command() {
+      return 'ffmpeg';
+    }
+
+    async spawnProcess(sourceUrl) {
+      this.spawnCalls.push(sourceUrl);
+      this.spawned = true;
+      return this;
+    }
+
+    async kill() {
+      this.spawned = false;
+      return true;
+    }
+
+    isAlive() {
+      return this.spawned;
+    }
+  }
+  FfmpegFake = FakeFfmpeg;
+  ctx.mock.module('../src/ffmpeg.js', { exports: { Ffmpeg: FfmpegFake } });
 
   ctx.mock.module('../src/ttlWatcher.js', {
     exports: {
@@ -170,8 +183,17 @@ before(async (ctx) => {
   ({ Stream } = await import('../src/stream.js'));
 });
 
-/** Builds a Stream with fresh fakes; returns the latest instances. */
+/**
+ * Builds a Stream with fresh fakes. The per-set instances (streamlink, ffmpeg,
+ * ttlWatcher) are getters that resolve to the CURRENT set at access time — so
+ * read them *after* the relevant start()/stop(). icecast is a single shared
+ * instance.
+ */
 function createStream(timeouts = {}) {
+  icecastInstances = [];
+  streamlinkInstances = [];
+  ffmpegInstances = [];
+  ttlWatcherInstances = [];
   const events = new EventBus();
   const stream = new Stream({
     config: {
@@ -194,174 +216,169 @@ function createStream(timeouts = {}) {
   return {
     stream,
     events,
-    icecast: icecastInstances[icecastInstances.length - 1],
-    streamlink: streamlinkInstances[streamlinkInstances.length - 1],
-    ffmpeg: ffmpegInstances[ffmpegInstances.length - 1],
-    ttlWatcher: ttlWatcherInstances[ttlWatcherInstances.length - 1]
+    get icecast() {
+      return icecastInstances.at(-1);
+    },
+    get streamlink() {
+      return streamlinkInstances.at(-1);
+    },
+    get ffmpeg() {
+      return ffmpegInstances.at(-1);
+    },
+    get ttlWatcher() {
+      return ttlWatcherInstances.at(-1);
+    }
   };
 }
 
 describe('Stream', () => {
   describe('start', () => {
     test('happy path: prepare, spawn, pipe, wait for mountpoint, watch TTL, emit stream:started', async () => {
-      const { stream, events, streamlink, ffmpeg, ttlWatcher } = createStream();
+      const app = createStream();
       const onStarted = mock.fn();
-      events.on(Event.streamStarted, onStarted);
-      const pipe = mock.fn();
-      streamlink.pipe = pipe;
-      const spawnFfmpeg = mock.fn(async () => {
-        ffmpeg.spawned = true;
-        return ffmpeg;
-      });
-      ffmpeg.spawnProcess = spawnFfmpeg;
+      app.events.on(Event.streamStarted, onStarted);
 
-      await stream.start(URL);
+      await app.stream.start(URL);
 
-      assert.equal(pipe.mock.callCount(), 1);
-      assert.equal(pipe.mock.calls[0].arguments[0], ffmpeg);
-      assert.equal(spawnFfmpeg.mock.callCount(), 1);
-      assert.equal(spawnFfmpeg.mock.calls[0].arguments[0], SOURCE_URL);
-      assert.deepEqual(ttlWatcher.watched, [URL]);
+      assert.deepEqual(app.streamlink.spawnCalls, [URL]);
+      assert.deepEqual(app.ffmpeg.spawnCalls, [SOURCE_URL]);
+      assert.equal(app.streamlink.pipeCalls[0], app.ffmpeg);
+      assert.deepEqual(app.ttlWatcher.watched, [URL]);
       assert.equal(onStarted.mock.callCount(), 1);
       assert.deepEqual(onStarted.mock.calls[0].arguments[0], { url: URL });
     });
 
     test('idempotent: starting the same URL again is a no-op', async () => {
-      const { stream, streamlink, ttlWatcher } = createStream();
-      streamlink.spawnProcess = mock.fn(async () => {
-        streamlink.spawned = true;
-        return streamlink;
-      });
+      const app = createStream();
 
-      await stream.start(URL);
-      await stream.start(URL);
+      await app.stream.start(URL);
+      await app.stream.start(URL);
 
-      assert.equal(streamlink.spawnProcess.mock.callCount(), 1);
-      assert.deepEqual(ttlWatcher.watched, [URL]);
+      assert.equal(app.streamlink.spawnCalls.length, 1);
+      assert.deepEqual(app.ttlWatcher.watched, [URL]);
     });
 
     test('fail fast: unreachable Icecast rejects before spawning', async () => {
-      const { stream, events, icecast, streamlink } = createStream();
+      const app = createStream();
       const onError = mock.fn();
-      events.on(Event.streamError, onError);
-      icecast.prepareMountPoint = async () => {
+      app.events.on(Event.streamError, onError);
+      app.icecast.prepareMountPoint = async () => {
         throw new Error('Icecast unreachable — cannot start stream');
       };
-      streamlink.spawnProcess = mock.fn();
 
-      await assert.rejects(stream.start(URL), /Icecast unreachable/);
+      await assert.rejects(app.stream.start(URL), /Icecast unreachable/);
 
-      assert.equal(streamlink.spawnProcess.mock.callCount(), 0);
+      assert.equal(streamlinkInstances.length, 0);
       assert.equal(onError.mock.callCount(), 1);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('failure: a dead pipeline process fails the start with attribution', async () => {
-      const { stream, events, icecast, streamlink } = createStream();
+      const app = createStream();
       const onError = mock.fn();
-      events.on(Event.streamError, onError);
-      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
-      streamlink.errorTail = 'error: No playable streams found for this URL\n';
-      streamlink.spawnProcess = async () => {
-        streamlink.spawned = true;
-        streamlink.die();
-        return streamlink;
+      app.events.on(Event.streamError, onError);
+      app.icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+      StreamlinkFake.next = {
+        spawnProcess: async function () {
+          this.spawned = true;
+          this.errorTail = 'error: No playable streams found for this URL\n';
+          this.die();
+          return this;
+        }
       };
 
       await assert.rejects(
-        stream.start(URL),
+        app.stream.start(URL),
         /streamlink exited before the mountpoint became active \(code 1\).*No playable streams/
       );
 
       assert.equal(onError.mock.callCount(), 1);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('a mid-start process exit is attributed to the dead process, not the killed survivor', async () => {
-      const { stream, icecast, ffmpeg } = createStream({ pollInterval: 1 });
-      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
-      ffmpeg.spawnProcess = async () => {
-        ffmpeg.spawned = true;
-        ffmpeg.die(null, 'SIGKILL'); // externally killed (OOM-style)
+      const app = createStream({ pollInterval: 1 });
+      app.icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+      FfmpegFake.next = {
+        spawnProcess: async function () {
+          this.spawned = true;
+          this.die(null, 'SIGKILL'); // externally killed (OOM-style)
+          return this;
+        }
       };
 
-      await assert.rejects(stream.start(URL), /ffmpeg exited before the mountpoint became active \(signal SIGKILL\)/);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      await assert.rejects(
+        app.stream.start(URL),
+        /ffmpeg exited before the mountpoint became active \(signal SIGKILL\)/
+      );
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('readiness: keeps polling until the mountpoint becomes active', async () => {
-      const { stream, events, icecast } = createStream({ pollInterval: 1 });
+      const app = createStream({ pollInterval: 1 });
       const onStarted = mock.fn();
-      events.on(Event.streamStarted, onStarted);
+      app.events.on(Event.streamStarted, onStarted);
       let calls = 0;
-      icecast.getStatus = async () => {
+      app.icecast.getStatus = async () => {
         calls += 1;
         return { icecastReachable: true, mountpointActive: calls >= 3, listeners: 0 };
       };
 
-      await stream.start(URL);
+      await app.stream.start(URL);
 
       assert.ok(calls >= 3);
       assert.equal(onStarted.mock.callCount(), 1);
     });
 
     test('readiness: fails when Icecast drops mid-wait', async () => {
-      const { stream, icecast } = createStream({ pollInterval: 1 });
-      icecast.status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
+      const app = createStream({ pollInterval: 1 });
+      app.icecast.status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
 
-      await assert.rejects(stream.start(URL), /Icecast unreachable/);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      await assert.rejects(app.stream.start(URL), /Icecast unreachable/);
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('readiness: times out when the mountpoint never activates and nothing exits', async () => {
-      const { stream, icecast } = createStream({ mountpointTimeout: 20, pollInterval: 1 });
-      icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
+      const app = createStream({ mountpointTimeout: 20, pollInterval: 1 });
+      app.icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
 
-      await assert.rejects(stream.start(URL), /mountpoint never became active/);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      await assert.rejects(app.stream.start(URL), /mountpoint never became active/);
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('replacing a stream: records the old one as replaced, then starts anew', async () => {
-      const { stream, events, icecast, streamlink, ttlWatcher } = createStream();
+      const app = createStream();
       const order = [];
-      events.on(Event.streamStarted, ({ url }) => order.push(`started:${url.slice(-3)}`));
-      events.on(Event.streamStopped, ({ url, reason }) => order.push(`stopped:${url.slice(-3)}:${reason}`));
+      app.events.on(Event.streamStarted, ({ url }) => order.push(`started:${url.slice(-3)}`));
+      app.events.on(Event.streamStopped, ({ url, reason }) => order.push(`stopped:${url.slice(-3)}:${reason}`));
       const prepare = mock.fn(async () => {});
-      icecast.prepareMountPoint = prepare;
-      streamlink.spawnProcess = mock.fn(async () => {
-        streamlink.spawned = true;
-        return streamlink;
-      });
+      app.icecast.prepareMountPoint = prepare;
 
-      await stream.start('https://youtube.com/watch?v=abc');
-      await stream.start('https://youtube.com/watch?v=def');
+      await app.stream.start('https://youtube.com/watch?v=abc');
+      await app.stream.start('https://youtube.com/watch?v=def');
 
       assert.deepEqual(order, ['started:abc', 'stopped:abc:replaced', 'started:def']);
       assert.equal(prepare.mock.callCount(), 2);
-      assert.deepEqual(ttlWatcher.watched, ['https://youtube.com/watch?v=abc', 'https://youtube.com/watch?v=def']);
-      assert.equal(ttlWatcher.stops, 1); // the old stream's watcher was stopped
-      const status = await stream.getStatus();
+      assert.deepEqual(ttlWatcherInstances[0].watched, ['https://youtube.com/watch?v=abc']);
+      assert.equal(ttlWatcherInstances[0].stops, 1); // the old stream's watcher was stopped
+      const status = await app.stream.getStatus();
       assert.equal(status.general.state, 'streaming');
       assert.equal(status.general.url, 'https://youtube.com/watch?v=def');
     });
 
     test('failed replace: the old stream is recorded as replaced, the new one as an error', async () => {
-      const { stream, events, icecast, streamlink } = createStream();
+      const app = createStream();
       const onStopped = mock.fn();
       const onError = mock.fn();
-      events.on(Event.streamStopped, onStopped);
-      events.on(Event.streamError, onError);
-      streamlink.spawnProcess = mock.fn(async () => {
-        streamlink.spawned = true;
-        return streamlink;
-      });
+      app.events.on(Event.streamStopped, onStopped);
+      app.events.on(Event.streamError, onError);
 
-      await stream.start('https://youtube.com/watch?v=abc');
+      await app.stream.start('https://youtube.com/watch?v=abc');
 
-      icecast.prepareMountPoint = async () => {
+      app.icecast.prepareMountPoint = async () => {
         throw new Error('old source still connected to the mountpoint');
       };
-      await assert.rejects(stream.start('https://youtube.com/watch?v=def'), /old source still connected/);
+      await assert.rejects(app.stream.start('https://youtube.com/watch?v=def'), /old source still connected/);
 
       assert.equal(onStopped.mock.callCount(), 1);
       assert.deepEqual(onStopped.mock.calls[0].arguments[0], {
@@ -370,78 +387,112 @@ describe('Stream', () => {
       });
       assert.equal(onError.mock.callCount(), 1);
       assert.equal(onError.mock.calls[0].arguments[0].url, 'https://youtube.com/watch?v=def');
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
   });
 
   describe('streamUrl', () => {
     test('streamUrl proxies the Icecast mount URL', () => {
-      const { stream } = createStream();
-      assert.equal(stream.streamUrl, MOUNT_URL);
+      const app = createStream();
+      assert.equal(app.stream.streamUrl, MOUNT_URL);
     });
   });
 
   describe('stop', () => {
     test('stop() emits stream:stopped with reason manual and stops the TTL watcher', async () => {
-      const { stream, events, ttlWatcher } = createStream();
+      const app = createStream();
       const onStopped = mock.fn();
-      events.on(Event.streamStopped, onStopped);
+      app.events.on(Event.streamStopped, onStopped);
 
-      await stream.start(URL);
-      await stream.stop();
+      await app.stream.start(URL);
+      await app.stream.stop();
 
       assert.equal(onStopped.mock.callCount(), 1);
       assert.deepEqual(onStopped.mock.calls[0].arguments[0], { reason: 'manual', url: URL });
-      assert.equal(ttlWatcher.stops, 1);
-      assert.equal((await stream.getStatus()).general.state, 'stopped');
+      assert.equal(app.ttlWatcher.stops, 1);
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('stop() on idle is a no-op', async () => {
-      const { stream, ttlWatcher } = createStream();
-
-      await stream.stop();
-
-      assert.equal(ttlWatcher.stops, 0);
-      assert.equal((await stream.getStatus()).general.state, 'idle');
+      const app = createStream();
+      await app.stream.stop();
+      assert.equal(ttlWatcherInstances.length, 0);
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
   });
 
   describe('events', () => {
     test('unexpected process exit emits stream:stopped with reason process-exit', async () => {
-      const { stream, events, ttlWatcher, ffmpeg } = createStream();
+      const app = createStream();
       const onStopped = mock.fn();
-      events.on(Event.streamStopped, onStopped);
+      app.events.on(Event.streamStopped, onStopped);
 
-      await stream.start(URL);
-      ffmpeg.die();
+      await app.stream.start(URL);
+      app.ffmpeg.die();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);
       assert.deepEqual(onStopped.mock.calls[0].arguments[0], { reason: 'process-exit', url: URL });
-      assert.equal(ttlWatcher.stops, 1);
+      assert.equal(app.ttlWatcher.stops, 1);
     });
 
     test('TTL expiry stops the stream with reason ttl', async () => {
-      const { stream, events, ttlWatcher } = createStream();
+      const app = createStream();
       const onStopped = mock.fn();
-      events.on(Event.streamStopped, onStopped);
+      app.events.on(Event.streamStopped, onStopped);
 
-      await stream.start(URL);
-      ttlWatcher.expire();
+      await app.stream.start(URL);
+      app.ttlWatcher.expire();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);
       assert.deepEqual(onStopped.mock.calls[0].arguments[0], { reason: 'ttl', url: URL });
     });
 
-    test('a late process-exit after a manual stop does not emit stream:stopped twice', async () => {
-      const { stream, events, streamlink } = createStream();
+    test('a stale TTL teardown does not stop a replacement stream', async () => {
+      const app = createStream();
       const onStopped = mock.fn();
-      events.on(Event.streamStopped, onStopped);
+      app.events.on(Event.streamStopped, onStopped);
 
-      await stream.start(URL);
-      await stream.stop();
-      streamlink.die();
+      await app.stream.start(URL); // stream A streaming
+
+      // Park the stale teardown on A's first (streamlink) kill.
+      let releaseKill;
+      const gate = new Promise((resolve) => {
+        releaseKill = resolve;
+      });
+      let first = true;
+      app.streamlink.kill = async () => {
+        if (first) {
+          first = false;
+          await gate; // the stale TTL teardown waits here
+          return true;
+        }
+        return true; // the replace teardown passes through
+      };
+      app.ttlWatcher.expire(); // -> #stopPipeline('ttl', A) gated on streamlink.kill
+
+      await app.stream.start('https://youtube.com/watch?v=def'); // replace A with B
+      releaseKill(); // let the stale teardown resume past its first kill
+      await flushAsync();
+
+      const status = await app.stream.getStatus();
+      assert.equal(status.general.state, 'streaming');
+      assert.equal(status.general.url, 'https://youtube.com/watch?v=def');
+      // No spurious ttl stop for the replacement.
+      assert.equal(onStopped.mock.calls.filter((call) => call.arguments[0].reason === 'ttl').length, 0);
+      // The replacement's ffmpeg survived the stale teardown.
+      assert.equal(app.ffmpeg.spawned, true);
+    });
+
+    test('a late process-exit after a manual stop does not emit stream:stopped twice', async () => {
+      const app = createStream();
+      const onStopped = mock.fn();
+      app.events.on(Event.streamStopped, onStopped);
+
+      await app.stream.start(URL);
+      await app.stream.stop();
+      app.streamlink.die();
       await flushAsync();
 
       assert.equal(onStopped.mock.callCount(), 1);
@@ -450,10 +501,10 @@ describe('Stream', () => {
 
   describe('getStatus', () => {
     test('getStatus reports the full snapshot', async () => {
-      const { stream, icecast } = createStream();
-      icecast.status = { icecastReachable: true, mountpointActive: true, listeners: 3 };
+      const app = createStream();
+      app.icecast.status = { icecastReachable: true, mountpointActive: true, listeners: 3 };
 
-      const status = await stream.getStatus();
+      const status = await app.stream.getStatus();
 
       assert.deepEqual(status, {
         streamlink: { status: 'stopped' },
@@ -464,22 +515,21 @@ describe('Stream', () => {
     });
 
     test('getStatus reports unavailable Icecast', async () => {
-      const { stream, icecast } = createStream();
-      icecast.status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
+      const app = createStream();
+      app.icecast.status = { icecastReachable: false, mountpointActive: false, listeners: 0 };
 
-      const status = await stream.getStatus();
-
+      const status = await app.stream.getStatus();
       assert.equal(status.icecast.status, 'unavailable');
       assert.equal(status.icecast.state, 'stopped');
     });
 
     test('getStatus while streaming includes running processes and the URL', async () => {
-      const { stream, icecast } = createStream();
-      icecast.status = { icecastReachable: true, mountpointActive: true, listeners: 2 };
+      const app = createStream();
+      app.icecast.status = { icecastReachable: true, mountpointActive: true, listeners: 2 };
 
-      await stream.start(URL);
+      await app.stream.start(URL);
 
-      const status = await stream.getStatus();
+      const status = await app.stream.getStatus();
       assert.equal(status.streamlink.status, 'running');
       assert.equal(status.ffmpeg.status, 'running');
       assert.equal(status.icecast.state, 'streaming');
@@ -488,15 +538,14 @@ describe('Stream', () => {
     });
 
     test('getStatus remembers the last URL after a stop', async () => {
-      const { stream, ttlWatcher } = createStream();
+      const app = createStream();
+      await app.stream.start(URL);
+      await app.stream.stop();
 
-      await stream.start(URL);
-      await stream.stop();
-
-      const status = await stream.getStatus();
-      assert.equal(status.general.state, 'stopped');
+      const status = await app.stream.getStatus();
+      assert.equal(status.general.state, 'idle');
       assert.equal(status.general.url, URL);
-      assert.equal(ttlWatcher.stops, 1);
+      assert.equal(app.ttlWatcher.stops, 1);
     });
   });
 });

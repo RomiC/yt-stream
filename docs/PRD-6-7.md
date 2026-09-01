@@ -108,7 +108,7 @@ src/
 ├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
 ├── icecast.js        # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
 ├── healthMonitor.js  # /health facade: status snapshot + ok/failure verdict
-├── stream.js         # orchestration: pipeline, mountpoint readiness, TTL watcher, status snapshot
+├── stream.js         # orchestration: StreamPipeline (per-generation pipeline: processes, readiness, derived phase) + live-pipelines map; status snapshot
 ├── ttlWatcher.js     # zero-listener TTL: polls Icecast, notifies owner via onExpired
 ├── auth.js           # API key validation (Fastify hook)
 ├── routes.js         # HTTP handlers
@@ -120,13 +120,16 @@ src/
 
 ### 4.2 Control flow — no state machine
 
-Drop the explicit state machine entirely. The single-flight `requestInProgress` flag handles concurrency. Streaming state is a plain in-memory object:
+Drop the explicit state machine entirely. The single-flight `requestInProgress` flag handles concurrency. Each generation is a `StreamPipeline` that owns its own streamlink/ffmpeg/TTL watcher and the Icecast client; `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id) and a `#current` pointer to the active one (null once it stops). Its phase is derived, not stored:
 
 ```js
+// a StreamPipeline
 current = {
-  url, // YouTube URL
-  phase: 'starting' | 'streaming' | 'stopped',
-  startedAt, // timestamp when streaming began (for uptime)
+  id,            // unique per generation
+  url,           // YouTube URL
+  startedAt,     // when the mount became active (for uptime)
+  streamlink, ffmpeg, ttlWatcher,  // owned by this pipeline
+  phase,         // 'starting' | 'streaming' | 'stopped'  — derived from process liveness + mount readiness
 };
 ```
 
@@ -135,15 +138,15 @@ current = {
 1. stop any existing pipeline (kill streamlink + ffmpeg, await exit; emits `stream:stopped` with reason `replaced`)
 2. `icecast.prepareMountPoint()` — Icecast reachable and mount free (old source released)
 3. streamlink picks a proxy itself — a random entry from `config.proxyList` (null when none)
-4. `streamlink.spawnProcess(url)` and `ffmpeg.spawnProcess(outputUrl)` — spawn; `streamlink.pipe(ffmpeg)`
-5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits — blaming it with its exit code/signal and stderr
+4. `StreamPipeline.start(outputUrl)` — spawns streamlink + ffmpeg, pipes them, then waits for the mount itself
+5. the pipeline polls the Icecast mountpoint (30s budget) and fails fast when a process exits (attributed with its exit code/signal and stderr)
 6. any step throwing fails the request (`500`); no retries
 
-Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. Operational logging is centralized in Stream — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
+Background concerns are observed directly, without the bus: `StreamPipeline` is the subscription unit for its own pipeline — it wires both process wrappers and the TTL watcher, exposing `onExit` (unexpected exits only, deliberate kills stay silent) and `onExpired`. Operational logging is centralized in Stream — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
 
 ### 4.3 Event bus
 
-A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via `onExit`/`onExpired`, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent) with `{ code, signal, pid, errors }` — the signal makes external kills (OOM, `docker kill`) self-explaining.
+A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired`, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent) with `{ code, signal, pid, errors }` — the signal makes external kills (OOM, `docker kill`) self-explaining.
 
 | Event               | Emitted by            | Consumed by      |
 | ------------------- | --------------------- | ---------------- |
@@ -180,7 +183,7 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 - **streamlink** — spawn args, proxy picking (random from config), error tail.
 - **ffmpeg** — spawn args, output URL, process exit.
 - **icecast** — ready/unreachable, mountpoint active/inactive, listener parse, `prepareMountPoint`.
-- **stream** — sequential happy path, mountpoint readiness (polling, fail-fast on exit, timeout), failure propagation, replace, TTL, process-exit handling.
+- **stream** — sequential happy path, mountpoint readiness (polling, fail-fast on exit, timeout) inside the pipeline, failure propagation, replace, TTL, process-exit handling.
 - **auth** — header, query, missing/invalid key.
 - **routes** — status codes (400/401/429/500/302).
 - **utils/isValidYoutubeUrl** — SSRF cases.

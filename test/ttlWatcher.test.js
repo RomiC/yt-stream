@@ -1,15 +1,14 @@
 import { describe, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { TTLWatcher } from '../src/ttlWatcher.js';
-import { silentLogger, flushAsync } from './helpers.js';
+import { flushAsync } from './helpers.js';
 
 describe('TTLWatcher', () => {
   const URL = 'https://youtube.com/watch?v=abc';
 
   function makeWatcher(overrides = {}) {
     const deps = {
-      config: { streamTtlMinutes: 1 },
-      logger: silentLogger(),
+      streamTtlMinutes: 1,
       icecast: {
         getStatus: async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 })
       },
@@ -142,7 +141,7 @@ describe('TTLWatcher', () => {
   test('watch is a no-op when TTL is disabled', async (ctx) => {
     ctx.mock.timers.enable({ apis: ['setInterval'] });
     const getStatus = mock.fn(async () => ({ icecastReachable: true, mountpointActive: true, listeners: 0 }));
-    const { watcher } = makeWatcher({ config: { streamTtlMinutes: 0 }, icecast: { getStatus } });
+    const { watcher } = makeWatcher({ streamTtlMinutes: 0, icecast: { getStatus } });
 
     watcher.watch(URL);
     ctx.mock.timers.tick(600_000);
