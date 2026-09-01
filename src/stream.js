@@ -30,7 +30,7 @@ export class Stream {
   #ttlWatcher;
   #mountpointTimeout;
   #pollInterval;
-  // Mid-start failure attribution: { cmd } recorded by the bus handler, consumed by #awaitStreamReadiness.
+  // Mid-start failure attribution: { wrapper, exit } recorded by onExit, read by #awaitStreamReadiness.
   #unexpectedExit = null;
 
   constructor({ config, logger, events, timeouts = {} }) {
@@ -40,9 +40,20 @@ export class Stream {
     this.#pollInterval = timeouts.pollInterval ?? POLL_INTERVAL;
     // The stream service owns its collaborators and can report its own
     // health; nothing outside Stream needs them.
-    this.#icecast = new Icecast({ config, logger });
-    this.#streamlink = new Streamlink({ config, logger });
-    this.#ffmpeg = new Ffmpeg({ logger });
+    this.#icecast = new Icecast({
+      host: config.icecast.host,
+      port: config.icecast.port,
+      sourcePassword: config.icecast.sourcePassword,
+      adminPassword: config.icecast.adminPassword,
+      publicHostname: config.publicHostname,
+      publicPort: config.icecast.publicPort,
+      logger
+    });
+    this.#streamlink = new Streamlink({
+      streamlinkQuality: config.streamlinkQuality,
+      proxyList: config.proxyList
+    });
+    this.#ffmpeg = new Ffmpeg();
     this.#ttlWatcher = new TTLWatcher({ config, logger, icecast: this.#icecast });
 
     // Deliberate kills never fire onExit — the wrappers swallow closes of
@@ -68,8 +79,10 @@ export class Stream {
     }
   }
 
-  async #onProcessExited(wrapper) {
-    this.#unexpectedExit = wrapper;
+  async #onProcessExited(wrapper, exit) {
+    const { how, tail } = this.#exitFacts(exit);
+    this.#logger.error({ cmd: wrapper.command, exit: how, tail }, 'unexpected process exit');
+    this.#unexpectedExit = { wrapper, exit };
     await this.#stopPipeline('process-exit');
     this.#ttlWatcher.stop();
   }
@@ -105,6 +118,7 @@ export class Stream {
       };
 
       const streamlink = await this.#streamlink.spawnProcess(youtubeUrl);
+      this.#logger.info({ proxy: streamlink.lastProxy }, 'starting streamlink');
       const ffmpeg = await this.#ffmpeg.spawnProcess(this.#icecast.sourceUrl);
       streamlink.pipe(ffmpeg);
       await this.#awaitStreamReadiness();
@@ -156,9 +170,17 @@ export class Stream {
     }
   }
 
-  #exitError(wrapper) {
-    const tail = wrapper.getErrorTail().split('\n').slice(-3).join(' | ');
-    return new Error(`${wrapper.command} exited before the mountpoint became active${tail ? `: ${tail}` : ''}`);
+  #exitError({ wrapper, exit }) {
+    const { how, tail } = this.#exitFacts(exit);
+    return new Error(
+      `${wrapper.command} exited before the mountpoint became active (${how})${tail ? `: ${tail}` : ''}`
+    );
+  }
+
+  #exitFacts(exit) {
+    const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`;
+    const tail = exit.errors.split('\n').slice(-3).join(' | ');
+    return { how, tail };
   }
 
   /**

@@ -14,31 +14,41 @@ export class IcecastUnreachableError extends Error {
  * and knows nothing about polling schedules; the caller (Stream) owns them.
  */
 export class Icecast {
-  #config;
+  #host;
+  #port;
+  #sourcePassword;
+  #adminPassword;
+  #publicHostname;
+  #publicPort;
   #logger;
   #mountpointClearTimeout;
   #waitPollInterval;
 
-  constructor({ config, logger, timeouts = {} }) {
-    this.#config = config;
+  constructor({ host, port, sourcePassword, adminPassword, publicHostname, publicPort, logger, timeouts = {} }) {
+    this.#host = host;
+    this.#port = port;
+    this.#sourcePassword = sourcePassword;
+    this.#adminPassword = adminPassword;
+    this.#publicHostname = publicHostname;
+    this.#publicPort = publicPort;
     this.#logger = logger;
     this.#mountpointClearTimeout = timeouts.mountpointClearTimeout ?? MOUNTPOINT_CLEAR_TIMEOUT;
     this.#waitPollInterval = timeouts.waitPollInterval ?? WAIT_POLL_INTERVAL;
   }
 
   get #adminUrl() {
-    return `http://${this.#config.icecast.host}:${this.#config.icecast.port}/admin/listmounts`;
+    return `http://${this.#host}:${this.#port}/admin/listmounts`;
   }
 
   get #authHeaders() {
     return {
-      Authorization: `Basic ${Buffer.from(`admin:${this.#config.icecast.adminPassword}`).toString('base64')}`
+      Authorization: `Basic ${Buffer.from(`admin:${this.#adminPassword}`).toString('base64')}`
     };
   }
 
   /** Source URL ffmpeg pushes audio to. */
   get sourceUrl() {
-    return `icecast://source:${this.#config.icecast.sourcePassword}@${this.#config.icecast.host}:${this.#config.icecast.port}/stream`;
+    return `icecast://source:${this.#sourcePassword}@${this.#host}:${this.#port}/stream`;
   }
 
   #parseListeners(xml) {
@@ -76,7 +86,7 @@ export class Icecast {
 
   /** Public audio mount URL the client is redirected to after a successful start. */
   get streamUrl() {
-    return `http://${this.#config.publicHostname}:${this.#config.icecast.publicPort}/stream`;
+    return `http://${this.#publicHostname}:${this.#publicPort}/stream`;
   }
 
   /**

@@ -65,17 +65,14 @@ export function flushAsync() {
 export function createFakeChildProcessBase({ spawnCalls }) {
   return class FakeChildProcess {
     _cmd;
-    _logger;
     _sigkillDelayMs;
     _proc = null;
-    _errorTails = new WeakMap();
-    _lastErrorTail = '';
+    _errors = new WeakMap();
     _killedProcs = new WeakSet();
     _exitCallbacks = [];
 
-    constructor({ cmd, logger, sigkillDelayMs = 5_000 }) {
+    constructor({ cmd, sigkillDelayMs = 5_000 }) {
       this._cmd = cmd;
-      this._logger = logger;
       this._sigkillDelayMs = sigkillDelayMs;
     }
 
@@ -91,15 +88,16 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       const proc = createFakeChildProcess();
       spawnCalls.push({ cmd: this._cmd, args, stdio });
       this._proc = proc;
-      this._errorTails.set(proc, '');
+      this._errors.set(proc, '');
 
       proc.stderr?.on('data', (data) => {
         const text = data.toString();
-        this._errorTails.set(proc, (this._errorTails.get(proc) + text).slice(-2_000));
+        this._errors.set(proc, this._errors.get(proc) + text);
       });
-      proc.on('error', (err) => this._logger.error({ err: err.message }, `${this._cmd} spawn error`));
+      proc.on('error', (err) => {
+        this._errors.set(proc, (this._errors.get(proc) ?? '') + err.message);
+      });
       proc.on('close', (code, signal) => {
-        this._lastErrorTail = this._errorTails.get(proc) ?? '';
         if (this._proc === proc) {
           this._proc = null;
         }
@@ -107,7 +105,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
           this._killedProcs.delete(proc);
           return;
         }
-        const exit = { code, signal, pid: proc.pid };
+        const exit = { code, signal, pid: proc.pid, errors: this._errors.get(proc) ?? '' };
         for (const callback of this._exitCallbacks) {
           callback(exit);
         }
@@ -148,12 +146,12 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       return this._proc;
     }
 
-    isAlive() {
-      return Boolean(this._proc);
+    get command() {
+      return this._cmd;
     }
 
-    getErrorTail() {
-      return this._proc ? (this._errorTails.get(this._proc) ?? '') : this._lastErrorTail;
+    isAlive() {
+      return Boolean(this._proc);
     }
 
     pipe(target) {

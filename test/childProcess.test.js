@@ -1,7 +1,6 @@
 import { describe, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { silentLogger } from './helpers.js';
 
 describe('ChildProcess', () => {
   const KEEP_ALIVE = ['-e', 'setInterval(() => {}, 1000)'];
@@ -34,7 +33,7 @@ describe('ChildProcess', () => {
   });
 
   test('spawn tracks the running process and returns it', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess();
 
     assert.equal(tool.process, proc);
@@ -42,7 +41,7 @@ describe('ChildProcess', () => {
   });
 
   test('spawn replaces a running process', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     try {
       const first = await tool.spawnProcess();
       const second = await tool.spawnProcess();
@@ -55,7 +54,7 @@ describe('ChildProcess', () => {
   });
 
   test('kill resolves true once the process has exited', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess();
 
     const killed = tool.kill();
@@ -65,12 +64,12 @@ describe('ChildProcess', () => {
   });
 
   test('kill resolves false when idle', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     assert.equal(await tool.kill(), false);
   });
 
   test('kill resolves false when the process already exited', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess(EXIT_NOW);
     await once(proc, 'close');
 
@@ -78,7 +77,7 @@ describe('ChildProcess', () => {
   });
 
   test('close clears the process and notifies onExit', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess(EXIT_NOW);
     await once(proc, 'close');
 
@@ -86,8 +85,18 @@ describe('ChildProcess', () => {
     assert.equal(tool.lastExit?.code, 0);
   });
 
+  test('spawn errors fold into the exit payload', async () => {
+    const tool = new FakeTool({ cmd: 'definitely-no-such-binary' });
+    const proc = await tool.spawnProcess(EXIT_NOW);
+    const closed = new Promise((resolve) => proc.on('close', resolve));
+    await closed; // events.once() would reject on the expected 'error' event
+
+    assert.match(tool.lastExit.errors, /ENOENT/);
+    assert.equal(tool.lastExit?.code, -2);
+  });
+
   test('an externally killed process reports the signal', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess(['-e', 'process.kill(process.pid, "SIGKILL")']);
     await once(proc, 'close');
 
@@ -95,16 +104,16 @@ describe('ChildProcess', () => {
     assert.equal(tool.lastExit?.code, null);
   });
 
-  test('getErrorTail keeps the exited process tail for diagnostics', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+  test('stderr survives exit and flows into the exit payload', async () => {
+    const tool = new FakeTool({});
     const proc = await tool.spawnProcess(['-e', 'console.error("kaput")'], ['ignore', 'ignore', 'pipe']);
     await once(proc, 'close');
 
-    assert.ok(tool.getErrorTail().includes('kaput'));
+    assert.ok(tool.lastExit.errors.includes('kaput'));
   });
 
   test('a deliberate kill does not notify onExit', async () => {
-    const tool = new FakeTool({ logger: silentLogger() });
+    const tool = new FakeTool({});
     await tool.spawnProcess();
 
     await tool.kill();
@@ -112,7 +121,7 @@ describe('ChildProcess', () => {
   });
 
   test('SIGKILL fallback fires when the process ignores SIGTERM', async () => {
-    const tool = new FakeTool({ logger: silentLogger(), sigkillDelayMs: 50 });
+    const tool = new FakeTool({ sigkillDelayMs: 50 });
     const proc = await tool.spawnProcess(IGNORE_SIGTERM);
     // Wait until the child has booted and registered its SIGTERM handler —
     // otherwise the default (terminate) would fire instead of the fallback.

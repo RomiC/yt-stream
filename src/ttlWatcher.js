@@ -70,7 +70,6 @@ export class TTLWatcher {
     if (this.#idleSince === null) {
       this.#idleSince = Date.now();
     } else if (Date.now() - this.#idleSince >= this.#config.streamTtlMinutes * 60_000) {
-      this.#logger.info({ ttlMinutes: this.#config.streamTtlMinutes }, 'TTL expired');
       this.stop();
       const url = this.#url;
       for (const callback of this.#expiredCallbacks) {

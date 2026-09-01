@@ -62,14 +62,18 @@ before(async (ctx) => {
           this.exitCallbacks.push(callback);
         }
 
-        die(code = 1) {
+        die(code = 1, signal = null) {
           for (const callback of this.exitCallbacks) {
-            callback({ code, pid: 4242 });
+            callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
           }
         }
 
         get command() {
           return 'streamlink';
+        }
+
+        get lastProxy() {
+          return null;
         }
 
         async spawnProcess() {
@@ -86,10 +90,6 @@ before(async (ctx) => {
 
         isAlive() {
           return this.spawned;
-        }
-
-        getErrorTail() {
-          return this.errorTail ?? '';
         }
       }
     }
@@ -109,9 +109,9 @@ before(async (ctx) => {
           this.exitCallbacks.push(callback);
         }
 
-        die(code = 1) {
+        die(code = 1, signal = null) {
           for (const callback of this.exitCallbacks) {
-            callback({ code, pid: 4242 });
+            callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
           }
         }
 
@@ -130,10 +130,6 @@ before(async (ctx) => {
 
         isAlive() {
           return this.spawned;
-        }
-
-        getErrorTail() {
-          return this.errorTail ?? '';
         }
       }
     }
@@ -177,7 +173,24 @@ before(async (ctx) => {
 /** Builds a Stream with fresh fakes; returns the latest instances. */
 function createStream(timeouts = {}) {
   const events = new EventBus();
-  const stream = new Stream({ config: { streamTtlMinutes: 15 }, logger: silentLogger(), events, timeouts });
+  const stream = new Stream({
+    config: {
+      streamTtlMinutes: 15,
+      streamlinkQuality: 'audio_only,worst',
+      proxyList: [],
+      icecast: {
+        host: 'icecast',
+        port: 8000,
+        sourcePassword: 'testsource',
+        adminPassword: 'testadmin',
+        publicPort: 8000
+      },
+      publicHostname: 'localhost'
+    },
+    logger: silentLogger(),
+    events,
+    timeouts
+  });
   return {
     stream,
     events,
@@ -257,7 +270,7 @@ describe('Stream', () => {
 
       await assert.rejects(
         stream.start(URL),
-        /streamlink exited before the mountpoint became active.*No playable streams/
+        /streamlink exited before the mountpoint became active \(code 1\).*No playable streams/
       );
 
       assert.equal(onError.mock.callCount(), 1);
@@ -269,10 +282,10 @@ describe('Stream', () => {
       icecast.status = { icecastReachable: true, mountpointActive: false, listeners: 0 };
       ffmpeg.spawnProcess = async () => {
         ffmpeg.spawned = true;
-        ffmpeg.die();
+        ffmpeg.die(null, 'SIGKILL'); // externally killed (OOM-style)
       };
 
-      await assert.rejects(stream.start(URL), /ffmpeg exited before the mountpoint became active/);
+      await assert.rejects(stream.start(URL), /ffmpeg exited before the mountpoint became active \(signal SIGKILL\)/);
       assert.equal((await stream.getStatus()).general.state, 'idle');
     });
 

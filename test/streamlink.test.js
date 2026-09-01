@@ -1,6 +1,6 @@
 import { describe, before, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFakeChildProcessBase, silentLogger } from './helpers.js';
+import { createFakeChildProcessBase } from './helpers.js';
 
 let spawnCalls = [];
 let Streamlink;
@@ -25,9 +25,14 @@ before(async (ctx) => {
 });
 
 describe('Streamlink', () => {
+  test('constructs without arguments', () => {
+    const streamlink = new Streamlink();
+    assert.equal(streamlink.command, 'streamlink');
+  });
+
   test('spawns streamlink with default-stream, retry and output args (no proxy)', async () => {
     spawnCalls.length = 0;
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
 
@@ -48,7 +53,7 @@ describe('Streamlink', () => {
   test('picks a proxy from config.proxyList and adds --http-proxy', async () => {
     spawnCalls.length = 0;
     const proxies = ['http://user:pass@proxy1:3128', 'http://proxy2:3128'];
-    const streamlink = new Streamlink({ config: makeConfig({ proxyList: proxies }), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig({ proxyList: proxies }));
 
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
 
@@ -56,26 +61,25 @@ describe('Streamlink', () => {
     const proxyIndex = args.indexOf('--http-proxy');
     assert.notEqual(proxyIndex, -1);
     assert.ok(proxies.includes(args[proxyIndex + 1]));
+    assert.ok(['http://proxy1:3128', 'http://proxy2:3128'].includes(streamlink.lastProxy));
   });
 
-  test('getErrorTail keeps the last stderr output', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+  test('stderr flows into the exit payload', async () => {
+    const streamlink = new Streamlink(makeConfig());
+    const onExit = mock.fn();
+    streamlink.onExit(onExit);
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    const first = streamlink.process;
-
-    const secondPromise = streamlink.spawnProcess('https://youtube.com/watch?v=abc');
-    first.emitClose(0); // release the replace-kill
-    await secondPromise;
     const proc = streamlink.process;
 
     proc.stderr.emit('data', Buffer.from('line one\n'));
     proc.stderr.emit('data', Buffer.from('line two\n'));
+    proc.emitClose(0);
 
-    assert.equal(streamlink.getErrorTail(), 'line one\nline two\n');
+    assert.equal(onExit.mock.calls[0].arguments[0].errors, 'line one\nline two\n');
   });
 
   test('kill terminates the current process with SIGTERM', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const proc = streamlink.process;
 
@@ -88,7 +92,7 @@ describe('Streamlink', () => {
   });
 
   test('spawnProcess replaces a running process', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
     await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
     const first = streamlink.process;
 
@@ -104,12 +108,12 @@ describe('Streamlink', () => {
   });
 
   test('kill on idle resolves false', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
     assert.equal(await streamlink.kill(), false);
   });
 
   test('unexpected close notifies onExit with the exit code', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
     const onExit = mock.fn();
     streamlink.onExit(onExit);
 
@@ -119,11 +123,11 @@ describe('Streamlink', () => {
 
     assert.equal(streamlink.process, null);
     assert.equal(onExit.mock.callCount(), 1);
-    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, signal: null, pid: proc.pid });
+    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, signal: null, pid: proc.pid, errors: '' });
   });
 
   test('a deliberate kill does not notify onExit', async () => {
-    const streamlink = new Streamlink({ config: makeConfig(), logger: silentLogger() });
+    const streamlink = new Streamlink(makeConfig());
     const onExit = mock.fn();
     streamlink.onExit(onExit);
 

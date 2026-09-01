@@ -103,7 +103,7 @@ Replace the monolithic `stream-manager.js` with focused modules:
 ```
 src/
 ├── events.js         # event bus + exported Event map (stream:* notifications)
-├── childProcess.js   # base class: process lifecycle, kill, stderr tail
+├── childProcess.js   # base class: process lifecycle, kill, ships stderr to the owner via the exit payload
 ├── streamlink.js     # streamlink process: fetch the stream
 ├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
 ├── icecast.js        # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
@@ -136,14 +136,14 @@ current = {
 2. `icecast.prepareMountPoint()` — Icecast reachable and mount free (old source released)
 3. streamlink picks a proxy itself — a random entry from `config.proxyList` (null when none)
 4. `streamlink.spawnProcess(url)` and `ffmpeg.spawnProcess(outputUrl)` — spawn; `streamlink.pipe(ffmpeg)`
-5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits (with its stderr tail)
+5. Stream awaits readiness: polls the Icecast mountpoint (30s budget), failing fast when either process exits — blaming it with its exit code/signal and stderr
 6. any step throwing fails the request (`500`); no retries
 
-Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
+Background concerns are observed directly, without the bus: the process wrappers report unexpected exits via `onExit` (deliberate kills stay silent), the TTL watcher notifies via `onExpired`. Operational logging is centralized in Stream — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
 
 ### 4.3 Event bus
 
-A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via `onExit`/`onExpired`, never through the bus.
+A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via `onExit`/`onExpired`, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent) with `{ code, signal, pid, errors }` — the signal makes external kills (OOM, `docker kill`) self-explaining.
 
 | Event               | Emitted by            | Consumed by      |
 | ------------------- | --------------------- | ---------------- |
@@ -176,7 +176,7 @@ Every pipeline teardown declares its reason — `stream:stopped` carries one of 
 
 Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `mock.module` (run with `--experimental-test-module-mocks`), plus real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Tests mirror the `src/` tree under `test/`. Cover basic and non-obvious scenarios:
 
-- **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, stderr tail.
+- **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, stderr in the exit payload, spawn errors.
 - **streamlink** — spawn args, proxy picking (random from config), error tail.
 - **ffmpeg** — spawn args, output URL, process exit.
 - **icecast** — ready/unreachable, mountpoint active/inactive, listener parse, `prepareMountPoint`.

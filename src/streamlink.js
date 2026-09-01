@@ -19,26 +19,31 @@ function redactProxy(proxy) {
  * spawnProcess replaces any previous process.
  */
 export class Streamlink extends ChildProcess {
-  #config;
-  #logger;
+  #streamlinkQuality;
+  #proxyList;
+  #lastProxy = null;
 
-  constructor({ config, logger, sigkillDelayMs }) {
-    super({ cmd: 'streamlink', logger, sigkillDelayMs });
-    this.#config = config;
-    this.#logger = logger;
+  constructor({ streamlinkQuality, proxyList = [] } = {}) {
+    super({ cmd: 'streamlink' });
+    this.#streamlinkQuality = streamlinkQuality;
+    this.#proxyList = proxyList;
+  }
+
+  /** Last picked proxy, already redacted for logging. */
+  get lastProxy() {
+    return this.#lastProxy;
   }
 
   /** Picks a random proxy from the configured list, or null when none. */
   #pickProxy() {
-    const proxies = this.#config.proxyList;
-    return proxies.length > 0 ? proxies[Math.floor(Math.random() * proxies.length)] : null;
+    return this.#proxyList.length > 0 ? this.#proxyList[Math.floor(Math.random() * this.#proxyList.length)] : null;
   }
 
   /** Spawns streamlink, through a random configured proxy when present. */
   async spawnProcess(youtubeUrl) {
     const proxy = this.#pickProxy();
-    this.#logger.info({ proxy: proxy ? redactProxy(proxy) : null }, 'starting streamlink');
-    const args = ['--default-stream', this.#config.streamlinkQuality, '--retry-open', '3', '--output', '-'];
+    this.#lastProxy = proxy ? redactProxy(proxy) : null;
+    const args = ['--default-stream', this.#streamlinkQuality, '--retry-open', '3', '--output', '-'];
     if (proxy) {
       args.push('--http-proxy', proxy);
     }

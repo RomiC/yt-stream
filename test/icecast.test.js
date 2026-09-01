@@ -19,7 +19,17 @@ describe('Icecast', () => {
   }
 
   function makeIcecast(overrides = {}, timeouts = {}) {
-    return new Icecast({ config: makeConfig(overrides), logger: silentLogger(), timeouts });
+    const config = makeConfig(overrides);
+    return new Icecast({
+      host: config.icecast.host,
+      port: config.icecast.port,
+      sourcePassword: config.icecast.sourcePassword,
+      adminPassword: config.icecast.adminPassword,
+      publicHostname: config.publicHostname,
+      publicPort: config.icecast.publicPort,
+      logger: silentLogger(),
+      timeouts
+    });
   }
 
   function okResponse(body) {
