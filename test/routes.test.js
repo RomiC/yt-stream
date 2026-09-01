@@ -21,7 +21,7 @@ describe('Routes', () => {
       start: async () => {},
       stop: async () => {},
       getStatus: async () => idleStatus(),
-      streamUrl: 'http://localhost:8871/stream'
+      streamUrl: 'https://yts.example.com/stream'
     };
     const healthMonitor = {
       getStatus: async () => ({ ...idleStatus(), general: { ...idleStatus().general, health: 'ok' } })
@@ -36,24 +36,24 @@ describe('Routes', () => {
     return app;
   }
 
-  describe('GET /stream', () => {
+  describe('GET /api/stream', () => {
     test('GET /stream with url starts a stream and 302s to the audio mount', async () => {
       const deps = makeDeps();
       const start = mock.fn(async () => {});
       deps.streamService.start = start;
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: `/stream?url=${encodeURIComponent(VALID_URL)}` });
+      const res = await app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
 
       assert.equal(start.mock.callCount(), 1);
       assert.equal(start.mock.calls[0].arguments[0], VALID_URL);
       assert.equal(res.statusCode, 302);
-      assert.equal(res.headers.location, 'http://localhost:8871/stream');
+      assert.equal(res.headers.location, '/stream');
     });
 
     test('GET /stream without url returns 400', async () => {
       const app = await buildApp();
-      const res = await app.inject({ method: 'GET', url: '/stream' });
+      const res = await app.inject({ method: 'GET', url: '/api/stream' });
 
       assert.equal(res.statusCode, 400);
       assert.equal(res.json().error, 'Missing url query parameter');
@@ -61,7 +61,7 @@ describe('Routes', () => {
 
     test('GET /stream with an invalid url returns 400', async () => {
       const app = await buildApp();
-      const res = await app.inject({ method: 'GET', url: '/stream?url=not-a-url' });
+      const res = await app.inject({ method: 'GET', url: '/api/stream?url=not-a-url' });
 
       assert.equal(res.statusCode, 400);
     });
@@ -75,10 +75,10 @@ describe('Routes', () => {
       deps.streamService.start = async () => gate;
       const app = await buildApp(deps);
 
-      const first = app.inject({ method: 'GET', url: `/stream?url=${encodeURIComponent(VALID_URL)}` });
+      const first = app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
       await sleep(20); // let requestInProgress flip to true
 
-      const second = await app.inject({ method: 'GET', url: `/stream?url=${encodeURIComponent(VALID_URL)}` });
+      const second = await app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
       assert.equal(second.statusCode, 429);
 
       release();
@@ -92,12 +92,12 @@ describe('Routes', () => {
       };
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: `/stream?url=${encodeURIComponent(VALID_URL)}` });
+      const res = await app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
       assert.equal(res.statusCode, 500);
       assert.equal(res.json().details, 'boom');
     });
   });
-  describe('DELETE /stream', () => {
+  describe('DELETE /api/stream', () => {
     test('DELETE /stream stops the active stream', async () => {
       const deps = makeDeps();
       const stop = mock.fn(async () => {});
@@ -105,7 +105,7 @@ describe('Routes', () => {
       deps.streamService.stop = stop;
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'DELETE', url: '/stream' });
+      const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
 
       assert.equal(stop.mock.callCount(), 1);
       assert.equal(res.statusCode, 200);
@@ -114,7 +114,7 @@ describe('Routes', () => {
 
     test('DELETE /stream with no active stream returns 404', async () => {
       const app = await buildApp();
-      const res = await app.inject({ method: 'DELETE', url: '/stream' });
+      const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
 
       assert.equal(res.statusCode, 404);
     });
@@ -128,10 +128,10 @@ describe('Routes', () => {
       deps.streamService.getStatus = async () => gate;
       const app = await buildApp(deps);
 
-      const first = app.inject({ method: 'DELETE', url: '/stream' });
+      const first = app.inject({ method: 'DELETE', url: '/api/stream' });
       await sleep(20);
 
-      const second = await app.inject({ method: 'DELETE', url: '/stream' });
+      const second = await app.inject({ method: 'DELETE', url: '/api/stream' });
       assert.equal(second.statusCode, 429);
 
       release({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
@@ -143,7 +143,7 @@ describe('Routes', () => {
       deps.streamService.getStatus = async () => ({ ...idleStatus(), general: { state: 'stopped', url: VALID_URL } });
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'DELETE', url: '/stream' });
+      const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
 
       assert.equal(res.statusCode, 404);
     });
@@ -157,28 +157,28 @@ describe('Routes', () => {
       deps.streamService.start = async () => gate;
       const app = await buildApp(deps);
 
-      const first = app.inject({ method: 'GET', url: `/stream?url=${encodeURIComponent(VALID_URL)}` });
+      const first = app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
       await sleep(20);
 
-      const res = await app.inject({ method: 'DELETE', url: '/stream' });
+      const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
       assert.equal(res.statusCode, 429);
 
       release();
       await first;
     });
   });
-  describe('GET /health', () => {
-    test('GET /health returns 200 and the payload when healthy', async () => {
+  describe('GET /api/health', () => {
+    test('GET /api/health returns 200 and the payload when healthy', async () => {
       const deps = makeDeps();
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
 
       assert.equal(res.statusCode, 200);
       assert.equal(res.json().general.health, 'ok');
     });
 
-    test('GET /health returns 503 when the verdict is failure', async () => {
+    test('GET /api/health returns 503 when the verdict is failure', async () => {
       const deps = makeDeps();
       deps.healthMonitor.getStatus = async () => ({
         ...idleStatus(),
@@ -186,13 +186,13 @@ describe('Routes', () => {
       });
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
 
       assert.equal(res.statusCode, 503);
       assert.equal(res.json().general.health, 'failure');
     });
 
-    test('GET /health passes through the full payload', async () => {
+    test('GET /api/health passes through the full payload', async () => {
       const payload = {
         streamlink: { status: 'running' },
         ffmpeg: { status: 'running' },
@@ -203,7 +203,7 @@ describe('Routes', () => {
       deps.healthMonitor.getStatus = async () => payload;
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
 
       assert.equal(res.statusCode, 200);
       assert.deepEqual(res.json(), payload);

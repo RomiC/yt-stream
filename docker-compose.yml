@@ -1,11 +1,31 @@
 name: yt-stream
 
 services:
+  caddy:
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    depends_on:
+      - stream-service
+      - icecast
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "128M"
+
   icecast:
     image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
     platform: linux/amd64
-    ports:
-      - "${ICECAST_PORT:-8871}:8000"
     volumes:
       - ./icecast.xml:/icecast.xml:ro
     environment:
@@ -23,8 +43,6 @@ services:
   stream-service:
     build: .
     image: yt-stream:latest
-    ports:
-      - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
       - ./proxy.json:/app/proxy.json:ro
@@ -33,8 +51,7 @@ services:
       ICECAST_HOST: icecast
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_PORT: "${ICECAST_PORT:-8871}"
-      PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
@@ -51,3 +68,5 @@ services:
 
 volumes:
   stream-data:
+  caddy-data:
+  caddy-config:

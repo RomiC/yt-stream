@@ -204,10 +204,9 @@ function createStream(timeouts = {}) {
         host: 'icecast',
         port: 8000,
         sourcePassword: 'testsource',
-        adminPassword: 'testadmin',
-        publicPort: 8000
+        adminPassword: 'testadmin'
       },
-      publicHostname: 'localhost'
+      publicBaseUrl: 'http://localhost'
     },
     logger: silentLogger(),
     events,

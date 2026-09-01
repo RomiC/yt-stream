@@ -22,6 +22,7 @@ describe('Config', () => {
     assert.equal(config.icecast.port, 8000);
     assert.equal(config.icecast.sourcePassword, 'secret');
     assert.equal(config.icecast.adminPassword, 'admin');
+    assert.equal(config.publicBaseUrl, 'http://localhost');
     assert.equal(config.logLevel, 'info');
     assert.equal(config.streamTtlMinutes, 15);
     assert.deepEqual(config.proxyList, []);
@@ -35,8 +36,7 @@ describe('Config', () => {
       ICECAST_HOST: 'ic.example',
       ICECAST_SOURCE_PASSWORD: 'icecast-source-password',
       ICECAST_ADMIN_PASSWORD: 'icecast-admin-password',
-      ICECAST_PORT: '8871',
-      PUBLIC_HOSTNAME: 'yt.example.com',
+      PUBLIC_BASE_URL: 'https://yts.example.com:3001',
       LOG_LEVEL: 'debug',
       STREAM_TTL_MINUTES: '0',
       PROXY_FILE: proxyFile,
@@ -47,8 +47,7 @@ describe('Config', () => {
     assert.equal(config.icecast.host, 'ic.example');
     assert.equal(config.icecast.sourcePassword, 'icecast-source-password');
     assert.equal(config.icecast.adminPassword, 'icecast-admin-password');
-    assert.equal(config.icecast.publicPort, 8871);
-    assert.equal(config.publicHostname, 'yt.example.com');
+    assert.equal(config.publicBaseUrl, 'https://yts.example.com:3001');
     assert.equal(config.logLevel, 'debug');
     assert.equal(config.streamTtlMinutes, 0);
     assert.deepEqual(config.proxyList, ['http://user:pass@1.2.3.4:8883']);
@@ -74,12 +73,10 @@ describe('Config', () => {
   test('falls back to defaults when numeric env vars are not parseable', () => {
     const config = new Config({
       PORT: 'not-a-port',
-      ICECAST_PORT: 'not-a-port',
       STREAM_TTL_MINUTES: 'lots'
     });
 
     assert.equal(config.port, 8080);
-    assert.equal(config.icecast.publicPort, 8000);
     assert.equal(config.streamTtlMinutes, 15);
   });
 

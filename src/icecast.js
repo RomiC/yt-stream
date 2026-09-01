@@ -18,19 +18,17 @@ export class Icecast {
   #port;
   #sourcePassword;
   #adminPassword;
-  #publicHostname;
-  #publicPort;
+  #publicBaseUrl;
   #logger;
   #mountpointClearTimeout;
   #waitPollInterval;
 
-  constructor({ host, port, sourcePassword, adminPassword, publicHostname, publicPort, logger, timeouts = {} }) {
+  constructor({ host, port, sourcePassword, adminPassword, publicBaseUrl, logger, timeouts = {} }) {
     this.#host = host;
     this.#port = port;
     this.#sourcePassword = sourcePassword;
     this.#adminPassword = adminPassword;
-    this.#publicHostname = publicHostname;
-    this.#publicPort = publicPort;
+    this.#publicBaseUrl = publicBaseUrl;
     this.#logger = logger;
     this.#mountpointClearTimeout = timeouts.mountpointClearTimeout ?? MOUNTPOINT_CLEAR_TIMEOUT;
     this.#waitPollInterval = timeouts.waitPollInterval ?? WAIT_POLL_INTERVAL;
@@ -84,9 +82,9 @@ export class Icecast {
     }
   }
 
-  /** Public audio mount URL the client is redirected to after a successful start. */
+  /** Public audio mount URL, built from PUBLIC_BASE_URL (served via Caddy). */
   get streamUrl() {
-    return `http://${this.#publicHostname}:${this.#publicPort}/stream`;
+    return `${this.#publicBaseUrl.replace(/\/+$/, '')}/stream`;
   }
 
   /**
