@@ -71,7 +71,7 @@ describe('Ffmpeg', () => {
 
     assert.equal(ffmpeg.process, null);
     assert.equal(onExit.mock.callCount(), 1);
-    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, pid: proc.pid });
+    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, signal: null, pid: proc.pid });
   });
 
   test('process exit after kill does not notify onExit', async () => {

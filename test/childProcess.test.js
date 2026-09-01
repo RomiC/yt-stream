@@ -86,6 +86,15 @@ describe('ChildProcess', () => {
     assert.equal(tool.lastExit?.code, 0);
   });
 
+  test('an externally killed process reports the signal', async () => {
+    const tool = new FakeTool({ logger: silentLogger() });
+    const proc = await tool.spawnProcess(['-e', 'process.kill(process.pid, "SIGKILL")']);
+    await once(proc, 'close');
+
+    assert.equal(tool.lastExit?.signal, 'SIGKILL');
+    assert.equal(tool.lastExit?.code, null);
+  });
+
   test('getErrorTail keeps the exited process tail for diagnostics', async () => {
     const tool = new FakeTool({ logger: silentLogger() });
     const proc = await tool.spawnProcess(['-e', 'console.error("kaput")'], ['ignore', 'ignore', 'pipe']);

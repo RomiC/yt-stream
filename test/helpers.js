@@ -24,9 +24,9 @@ export function createFakeChildProcess() {
     proc.killed = true;
     proc.signal = signal;
   };
-  proc.emitClose = (code = 0) => {
+  proc.emitClose = (code = 0, signal = null) => {
     proc.exitCode = code;
-    proc.emit('close', code);
+    proc.emit('close', code, signal);
   };
   proc.emitError = (message) => {
     proc.emit('error', new Error(message));
@@ -98,7 +98,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
         this._errorTails.set(proc, (this._errorTails.get(proc) + text).slice(-2_000));
       });
       proc.on('error', (err) => this._logger.error({ err: err.message }, `${this._cmd} spawn error`));
-      proc.on('close', (code) => {
+      proc.on('close', (code, signal) => {
         this._lastErrorTail = this._errorTails.get(proc) ?? '';
         if (this._proc === proc) {
           this._proc = null;
@@ -107,7 +107,7 @@ export function createFakeChildProcessBase({ spawnCalls }) {
           this._killedProcs.delete(proc);
           return;
         }
-        const exit = { code, pid: proc.pid };
+        const exit = { code, signal, pid: proc.pid };
         for (const callback of this._exitCallbacks) {
           callback(exit);
         }

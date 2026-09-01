@@ -119,7 +119,7 @@ describe('Streamlink', () => {
 
     assert.equal(streamlink.process, null);
     assert.equal(onExit.mock.callCount(), 1);
-    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, pid: proc.pid });
+    assert.deepEqual(onExit.mock.calls[0].arguments[0], { code: 1, signal: null, pid: proc.pid });
   });
 
   test('a deliberate kill does not notify onExit', async () => {

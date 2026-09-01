@@ -49,8 +49,8 @@ export class ChildProcess {
       this.#logger.debug({ [this.#cmd]: text.trim() });
     });
     proc.on('error', (err) => this.#logger.error({ err: err.message }, `${this.#cmd} spawn error`));
-    proc.on('close', (code) => {
-      this.#logger.warn({ code, pid: proc.pid }, `${this.#cmd} exited`);
+    proc.on('close', (code, signal) => {
+      this.#logger.warn({ code, signal, pid: proc.pid }, `${this.#cmd} exited`);
       this.#lastErrorTail = this.#errorTails.get(proc) ?? '';
       if (this.#proc === proc) {
         this.#proc = null;
@@ -59,7 +59,7 @@ export class ChildProcess {
         this.#killedProcs.delete(proc);
         return;
       }
-      const exit = { code, pid: proc.pid };
+      const exit = { code, signal, pid: proc.pid };
       for (const callback of this.#exitCallbacks) {
         callback(exit);
       }
