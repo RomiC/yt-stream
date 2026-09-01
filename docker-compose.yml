@@ -12,8 +12,6 @@ services:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
-    # Copy our config into the writable location first — the image entrypoint
-    # uses sed -i which cannot rename over a Docker bind-mounted file.
     command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
     restart: unless-stopped
     deploy:
@@ -29,13 +27,13 @@ services:
       - "${PORT:-8870}:8080"
     volumes:
       - stream-data:/app/data
-      - ./proxy.json:/app/proxy.json:ro   # user-provided proxy list for streamlink
+      - ./proxy.json:/app/proxy.json:ro
     environment:
       PORT: "8080"
       ICECAST_HOST: icecast
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_PORT: "${ICECAST_PORT:-8871}"  # public port for redirect URLs only
+      ICECAST_PORT: "${ICECAST_PORT:-8871}"
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
@@ -49,7 +47,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "256M"   # streamlink + ffmpeg + node
+          memory: "256M"
 
 volumes:
   stream-data:

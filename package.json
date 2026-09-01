@@ -5,12 +5,21 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "test": "node --experimental-test-module-mocks --test 'test/**/*.test.js'",
+    "lint": "oxlint -c oxlint.config.mjs",
+    "lint:fix": "oxlint -c oxlint.config.mjs --fix",
+    "format": "oxfmt -c oxfmt.config.mjs",
+    "format:check": "oxfmt -c oxfmt.config.mjs --check"
   },
   "dependencies": {
     "fastify": "5.11.3"
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "oxfmt": "0.64.0",
+    "oxlint": "1.79.0"
   }
 }

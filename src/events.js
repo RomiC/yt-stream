@@ -1,0 +1,35 @@
+import { EventEmitter } from 'node:events';
+
+/**
+ * The outward notifications emitted by Stream on the bus (PRD §4.3).
+ * Subscribe and emit with these constants project-wide — never raw string
+ * literals.
+ *
+ *   streamStarted     { url }
+ *   streamStopped     { url, reason: 'manual'|'replaced'|'process-exit'|'ttl' }
+ *   streamError       { url, error }
+ */
+export const Event = Object.freeze({
+  streamStarted: 'stream:started',
+  streamStopped: 'stream:stopped',
+  streamError: 'stream:error'
+});
+
+/**
+ * Pub/sub bus decoupling modules from each other.
+ */
+export class EventBus {
+  #emitter = new EventEmitter();
+
+  on(event, handler) {
+    this.#emitter.on(event, handler);
+  }
+
+  off(event, handler) {
+    this.#emitter.off(event, handler);
+  }
+
+  emit(event, payload) {
+    this.#emitter.emit(event, payload);
+  }
+}

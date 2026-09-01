@@ -1,5 +1,7 @@
 # YouTube → Radio Stream Service — Design (PoC)
 
+> **Status: superseded.** The production refactor replaced this architecture (module decomposition, event bus, no state machine) — see [`docs/PRD-6-7.md`](docs/PRD-6-7.md) for the current design.
+
 ## Overview
 
 A self-hosted Node.js service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. The user makes a single `GET` request with a YouTube URL and is redirected to an Icecast mountpoint playable by any radio receiver.
@@ -221,10 +223,10 @@ volumes:
 yt-stream/
 ├── src/
 │   ├── index.js            # Entry point, Fastify app setup, routes
-│   ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL
-│   ├── proxy-list.js       # Reads proxy.json and returns the proxy list
-│   ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status)
-│   └── health.js           # Health check logic (component status aggregation)
+│   ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL   *(removed by the refactor)*
+│   ├── proxy-list.js       # Reads proxy.json and returns the proxy list             *(now Config)*
+│   ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status) *(now icecast.js)*
+│   └── health.js           # Health check logic (component status aggregation)       *(now healthMonitor.js)*
 ├── proxy.json              # User-provided proxy list (JSON array of URL strings)
 ├── Dockerfile
 ├── docker-compose.yml

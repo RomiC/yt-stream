@@ -1,5 +1,7 @@
 # YouTube → Radio Stream Service — PoC Requirements
 
+> **Status: superseded.** Production requirements are defined in [`docs/PRD-6-7.md`](docs/PRD-6-7.md).
+
 ## Overview
 
 A self-hosted Node.js service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. The user makes a single `GET` request with a YouTube URL and is redirected to an Icecast mountpoint playable by any radio receiver.
