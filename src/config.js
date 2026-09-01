@@ -21,7 +21,7 @@ function isValidProxyUrl(proxy) {
 export class Config {
   #port;
   #icecast;
-  #publicHostname;
+  #publicBaseUrl;
   #logLevel;
   #streamTtlMinutes;
   #proxyList;
@@ -33,14 +33,18 @@ export class Config {
       host: env.ICECAST_HOST || 'icecast',
       port: 8000, // internal container port — never changes
       sourcePassword: env.ICECAST_SOURCE_PASSWORD || 'secret',
-      adminPassword: env.ICECAST_ADMIN_PASSWORD || 'admin',
-      publicPort: parseIntEnv(env.ICECAST_PORT, 8000) // host-facing port for redirects
+      adminPassword: env.ICECAST_ADMIN_PASSWORD || 'admin'
     });
-    this.#publicHostname = env.PUBLIC_HOSTNAME || 'localhost';
+    this.#publicBaseUrl = this.#normalizeBaseUrl(env.PUBLIC_BASE_URL || 'http://localhost');
     this.#logLevel = env.LOG_LEVEL || 'info';
     this.#streamTtlMinutes = parseIntEnv(env.STREAM_TTL_MINUTES, 15);
     this.#proxyList = this.#loadProxyList(env.PROXY_FILE);
     this.#streamlinkQuality = env.STREAMLINK_QUALITY || 'audio_only,worst';
+  }
+
+  /** Strips a trailing slash so callers can append paths directly. */
+  #normalizeBaseUrl(value) {
+    return value.replace(/\/+$/, '');
   }
 
   /** Reads the PROXY_FILE (a JSON array of proxy URL strings) once at startup. */
@@ -66,8 +70,8 @@ export class Config {
     return this.#icecast;
   }
 
-  get publicHostname() {
-    return this.#publicHostname;
+  get publicBaseUrl() {
+    return this.#publicBaseUrl;
   }
 
   get logLevel() {

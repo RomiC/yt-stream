@@ -52,12 +52,21 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 - Routing:
 
 ```
-{$SITE_ADDRESS} {
-    reverse_proxy /api/* stream-service:8080
-    reverse_proxy /stream icecast:8000
-    handle { respond 404 }
+{$PUBLIC_BASE_URL} {
+    handle /api/* {
+        reverse_proxy stream-service:8080
+    }
+    handle /stream {
+        reverse_proxy icecast:8000
+    }
+    handle {
+        respond 404
+    }
 }
 ```
+
+> All routes must be `handle` blocks — mixing path-matched `reverse_proxy` with a bare
+> `handle { respond 404 }` lets Caddy's directive ordering put the catch-all first.
 
 - Everything except `/api/*` and `/stream` returns 404. Icecast's `/admin/*`, `/status.xsl`, and `/` are unreachable externally.
 
@@ -79,8 +88,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 
 - Caddy automatic HTTPS (Let's Encrypt) with the service domain.
 - **Configurable via env:**
-- `SITE_ADDRESS` — e.g. `yt-stream.charugin.me` (auto-HTTPS) or `:80` (HTTP only).
-- Redirect target in the start response is built from the same address.
+- `PUBLIC_BASE_URL` — full public base URL, e.g. `https://yts.charugin.me` (auto-HTTPS) or `http://yts.localhost` (HTTP only, local dev). Used as the Caddy site address and to build absolute stream URLs.
 
 ### 3.5 Additional hardening
 
@@ -162,7 +170,7 @@ Every pipeline teardown declares its reason — `stream:stopped` carries one of 
 | ---------------------------- | ------------ | --------------------------------------- |
 | `API_KEY`                    | _(required)_ | API auth                                |
 | `ALLOW_KEY_IN_QUERY`         | `false`      | Allow `?key=` query auth                |
-| `SITE_ADDRESS`               | `:80`        | Public address for Caddy + redirects    |
+| `PUBLIC_BASE_URL`             | `http://localhost` | Public base URL: Caddy site address + absolute URLs |
 | `ICECAST_MAX_LISTENERS`      | `2`          | Per-mount listener cap                  |
 | `STREAM_TTL_MINUTES`         | `15`         | Auto-stop after N min of zero listeners (polled every 60s) |
 | `ICECAST_SOURCE_PASSWORD`    | —            | Source auth (ffmpeg → Icecast)          |
@@ -238,7 +246,7 @@ services:
   icecast: # internal (8000, no host port)
 ```
 
-- Caddy: official `caddy:2-alpine` image, Caddyfile generated from env.
+- Caddy: official `caddy:2-alpine` image (digest-pinned), static Caddyfile using env-var placeholders (`{$PUBLIC_BASE_URL}`).
 - `stream-service` / `icecast`: as today, but with no published ports and added hardening (read-only rootfs, dropped caps, no-new-privileges).
 - Deploy continues via the existing GitHub Actions SSH flow (pull + `docker compose up`).
 

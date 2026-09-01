@@ -10,10 +10,9 @@ describe('Icecast', () => {
         host: 'icecast',
         port: 8000,
         adminPassword: 'admin',
-        sourcePassword: 'secret',
-        publicPort: 8000
+        sourcePassword: 'secret'
       },
-      publicHostname: 'localhost',
+      publicBaseUrl: 'http://localhost',
       ...overrides
     };
   }
@@ -25,8 +24,7 @@ describe('Icecast', () => {
       port: config.icecast.port,
       sourcePassword: config.icecast.sourcePassword,
       adminPassword: config.icecast.adminPassword,
-      publicHostname: config.publicHostname,
-      publicPort: config.icecast.publicPort,
+      publicBaseUrl: config.publicBaseUrl,
       logger: silentLogger(),
       timeouts
     });
@@ -107,12 +105,12 @@ describe('Icecast', () => {
   describe('URLs', () => {
     test('sourceUrl and streamUrl getters are derived from config', () => {
       const icecast = makeIcecast({
-        icecast: { host: 'ic', port: 8000, sourcePassword: 'icecast-password', publicPort: 8871 },
-        publicHostname: 'yt.example.com'
+        icecast: { host: 'ic', port: 8000, sourcePassword: 'icecast-password' },
+        publicBaseUrl: 'https://yts.example.com:3001/'
       });
 
       assert.equal(icecast.sourceUrl, 'icecast://source:icecast-password@ic:8000/stream');
-      assert.equal(icecast.streamUrl, 'http://yt.example.com:8871/stream');
+      assert.equal(icecast.streamUrl, 'https://yts.example.com:3001/stream');
     });
   });
   describe('prepareMountPoint', () => {

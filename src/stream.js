@@ -196,8 +196,7 @@ export class Stream {
       port: config.icecast.port,
       sourcePassword: config.icecast.sourcePassword,
       adminPassword: config.icecast.adminPassword,
-      publicHostname: config.publicHostname,
-      publicPort: config.icecast.publicPort,
+      publicBaseUrl: config.publicBaseUrl,
       logger
     });
   }

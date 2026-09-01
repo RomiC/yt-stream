@@ -4,18 +4,18 @@ export async function registerRoutes(app, { streamService, healthMonitor }) {
   // Single-flight: at most one start/stop operation at a time (PRD §2).
   let requestInProgress = false;
 
-  // --- GET /health -----------------------------------------------------------
+  // --- GET /api/health -------------------------------------------------------
 
-  app.get('/health', async (request, reply) => {
+  app.get('/api/health', async (request, reply) => {
     const health = await healthMonitor.getStatus();
     reply.code(health.general.health === 'ok' ? 200 : 503);
     return health;
   });
 
-  // --- GET /stream -----------------------------------------------------------
-  // Status is served by /health; this route only starts a stream.
+  // --- GET /api/stream -------------------------------------------------------
+  // Status is served by /api/health; this route only starts a stream.
 
-  app.get('/stream', async (request, reply) => {
+  app.get('/api/stream', async (request, reply) => {
     const { url } = request.query;
 
     if (!url) {
@@ -36,7 +36,7 @@ export async function registerRoutes(app, { streamService, healthMonitor }) {
     requestInProgress = true;
     try {
       await streamService.start(url);
-      reply.redirect(streamService.streamUrl);
+      reply.redirect('/stream');
       return;
     } catch (err) {
       reply.code(500);
@@ -46,9 +46,9 @@ export async function registerRoutes(app, { streamService, healthMonitor }) {
     }
   });
 
-  // --- DELETE /stream --------------------------------------------------------
+  // --- DELETE /api/stream ----------------------------------------------------
 
-  app.delete('/stream', async (request, reply) => {
+  app.delete('/api/stream', async (request, reply) => {
     if (requestInProgress) {
       reply.code(429);
       return { error: 'A stream operation is in progress' };
