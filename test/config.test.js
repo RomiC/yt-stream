@@ -27,6 +27,8 @@ describe('Config', () => {
     assert.equal(config.streamTtlMinutes, 15);
     assert.deepEqual(config.proxyList, []);
     assert.equal(config.streamlinkQuality, 'audio_only,worst');
+    assert.equal(config.apiKey, 'dev-api-key');
+    assert.equal(config.allowKeyInQuery, false);
   });
 
   test('parses env overrides', () => {
@@ -40,7 +42,9 @@ describe('Config', () => {
       LOG_LEVEL: 'debug',
       STREAM_TTL_MINUTES: '0',
       PROXY_FILE: proxyFile,
-      STREAMLINK_QUALITY: 'best'
+      STREAMLINK_QUALITY: 'best',
+      API_KEY: 'real-production-key',
+      ALLOW_KEY_IN_QUERY: 'true'
     });
 
     assert.equal(config.port, 9000);
@@ -52,6 +56,15 @@ describe('Config', () => {
     assert.equal(config.streamTtlMinutes, 0);
     assert.deepEqual(config.proxyList, ['http://user:pass@1.2.3.4:8883']);
     assert.equal(config.streamlinkQuality, 'best');
+    assert.equal(config.apiKey, 'real-production-key');
+    assert.equal(config.allowKeyInQuery, true);
+  });
+
+  test('ALLOW_KEY_IN_QUERY is enabled only by the exact string "true"', () => {
+    for (const value of ['false', 'yes', '1', 'TRUE', '']) {
+      const config = new Config({ ALLOW_KEY_IN_QUERY: value });
+      assert.equal(config.allowKeyInQuery, false, `ALLOW_KEY_IN_QUERY=${value}`);
+    }
   });
 
   test('proxyList filters out invalid entries', () => {

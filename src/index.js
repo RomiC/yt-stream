@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { Config } from './config.js';
+import { registerAuth, logRedact } from './auth.js';
 import { EventBus, Event } from './events.js';
 import { Stream } from './stream.js';
 import { HealthMonitor } from './healthMonitor.js';
@@ -8,7 +9,7 @@ import { registerRoutes } from './routes.js';
 const config = new Config();
 
 const app = Fastify({
-  logger: { level: config.logLevel }
+  logger: { level: config.logLevel, redact: logRedact }
 });
 
 const events = new EventBus();
@@ -24,8 +25,13 @@ if (config.icecast.sourcePassword === 'secret' || config.icecast.adminPassword =
   );
 }
 
+if (config.apiKey === 'dev-api-key') {
+  app.log.warn('Using default API key — set API_KEY in production');
+}
+
 const healthMonitor = new HealthMonitor({ streamService });
 
-await registerRoutes(app, { streamService, healthMonitor });
+registerAuth(app, { config });
+registerRoutes(app, { streamService, healthMonitor });
 
 await app.listen({ port: config.port, host: '0.0.0.0' });

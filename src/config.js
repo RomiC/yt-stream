@@ -26,6 +26,8 @@ export class Config {
   #streamTtlMinutes;
   #proxyList;
   #streamlinkQuality;
+  #apiKey;
+  #allowKeyInQuery;
 
   constructor(env = process.env) {
     this.#port = parseIntEnv(env.PORT, 8080);
@@ -40,6 +42,8 @@ export class Config {
     this.#streamTtlMinutes = parseIntEnv(env.STREAM_TTL_MINUTES, 15);
     this.#proxyList = this.#loadProxyList(env.PROXY_FILE);
     this.#streamlinkQuality = env.STREAMLINK_QUALITY || 'audio_only,worst';
+    this.#apiKey = env.API_KEY || 'dev-api-key';
+    this.#allowKeyInQuery = env.ALLOW_KEY_IN_QUERY === 'true';
   }
 
   /** Strips a trailing slash so callers can append paths directly. */
@@ -89,5 +93,13 @@ export class Config {
 
   get streamlinkQuality() {
     return this.#streamlinkQuality;
+  }
+
+  get apiKey() {
+    return this.#apiKey;
+  }
+
+  get allowKeyInQuery() {
+    return this.#allowKeyInQuery;
   }
 }
