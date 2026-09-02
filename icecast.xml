@@ -24,6 +24,11 @@
         <port>8000</port>
     </listen-socket>
 
+    <mount>
+        <mount-name>/stream</mount-name>
+        <max-listeners>2</max-listeners>
+    </mount>
+
     <fileserve>1</fileserve>
 
     <paths>

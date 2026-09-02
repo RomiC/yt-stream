@@ -508,7 +508,7 @@ describe('Stream', () => {
       assert.deepEqual(status, {
         streamlink: { status: 'stopped' },
         ffmpeg: { status: 'stopped' },
-        icecast: { status: 'available', state: 'streaming' },
+        icecast: { status: 'available', state: 'streaming', listeners: 3 },
         general: { state: 'idle', url: null }
       });
     });
@@ -520,6 +520,7 @@ describe('Stream', () => {
       const status = await app.stream.getStatus();
       assert.equal(status.icecast.status, 'unavailable');
       assert.equal(status.icecast.state, 'stopped');
+      assert.equal(status.icecast.listeners, 0);
     });
 
     test('getStatus while streaming includes running processes and the URL', async () => {
@@ -532,6 +533,7 @@ describe('Stream', () => {
       assert.equal(status.streamlink.status, 'running');
       assert.equal(status.ffmpeg.status, 'running');
       assert.equal(status.icecast.state, 'streaming');
+      assert.equal(status.icecast.listeners, 2);
       assert.equal(status.general.state, 'streaming');
       assert.equal(status.general.url, URL);
     });
