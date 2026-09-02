@@ -178,5 +178,46 @@ describe('Auth', () => {
       assert.ok(!logged.includes(KEY), `key leaked to logs: ${logged}`);
       assert.ok(logged.includes('key=[REDACTED]'), `redacted url not logged: ${logged}`);
     });
+
+    test('percent-encoded param name cannot smuggle the key into logs', async () => {
+      const chunks = [];
+      const app = Fastify({
+        logger: {
+          level: 'info',
+          stream: { write: (chunk) => chunks.push(chunk) },
+          redact: logRedact
+        }
+      });
+      await registerAuth(app, { config: makeConfig({ allowKeyInQuery: true }) });
+      app.get('/api/x', async () => ({}));
+
+      const res = await app.inject({ method: 'GET', url: `/api/x?k%65y=${KEY}` });
+      assert.equal(res.statusCode, 200);
+
+      const logged = chunks.join('');
+      assert.ok(!logged.includes(KEY), `key leaked to logs: ${logged}`);
+      assert.ok(!logged.includes('k%65y'), `encoded param name not redacted: ${logged}`);
+    });
+
+    test('percent-encoded param value is redacted too', async () => {
+      const chunks = [];
+      const app = Fastify({
+        logger: {
+          level: 'info',
+          stream: { write: (chunk) => chunks.push(chunk) },
+          redact: logRedact
+        }
+      });
+      await registerAuth(app, { config: makeConfig({ allowKeyInQuery: true }) });
+      app.get('/api/x', async () => ({}));
+
+      const encodedKey = encodeURIComponent(KEY);
+      const res = await app.inject({ method: 'GET', url: `/api/x?key=${encodedKey}` });
+      assert.equal(res.statusCode, 200);
+
+      const logged = chunks.join('');
+      assert.ok(!logged.includes(encodedKey), `encoded key leaked to logs: ${logged}`);
+      assert.ok(logged.includes('key=[REDACTED]'), `redacted url not logged: ${logged}`);
+    });
   });
 });

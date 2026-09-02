@@ -3,8 +3,36 @@ import { timingSafeEqual } from 'node:crypto';
 /** Pino redact rules — scrubs the `key` query param from logged request URLs (PRD §3.5). */
 export const logRedact = {
   paths: ['req.url'],
-  censor: (url) => (typeof url === 'string' ? url.replace(/([?&])key=[^&]*/g, '$1key=[REDACTED]') : '[REDACTED]')
+  censor: redactApiKey
 };
+
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+// Matches the decoded param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
+function redactApiKey(url) {
+  if (typeof url !== 'string') {
+    return '[REDACTED]';
+  }
+  const queryStart = url.indexOf('?');
+  if (queryStart === -1) {
+    return url;
+  }
+
+  const path = url.slice(0, queryStart);
+  const query = url
+    .slice(queryStart + 1)
+    .split('&')
+    .map((pair) => (safeDecode(pair.split('=', 1)[0]) === 'key' ? 'key=[REDACTED]' : pair))
+    .join('&');
+
+  return `${path}?${query}`;
+}
 
 function extractApiKey(request, allowQuery) {
   const authorization = request.headers.authorization;
