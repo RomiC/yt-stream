@@ -52,6 +52,8 @@ services:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
+      API_KEY: "${API_KEY:-}"
+      ALLOW_KEY_IN_QUERY: "${ALLOW_KEY_IN_QUERY:-false}"
       DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"

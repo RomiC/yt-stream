@@ -32,7 +32,7 @@ describe('Routes', () => {
 
   async function buildApp(deps = makeDeps()) {
     const app = Fastify({ logger: false });
-    await registerRoutes(app, deps);
+    registerRoutes(app, deps);
     return app;
   }
 

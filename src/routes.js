@@ -1,6 +1,6 @@
 import { isValidYoutubeUrl } from './utils/isValidYoutubeUrl.js';
 
-export async function registerRoutes(app, { streamService, healthMonitor }) {
+export function registerRoutes(app, { streamService, healthMonitor }) {
   // Single-flight: at most one start/stop operation at a time (PRD §2).
   let requestInProgress = false;
 
