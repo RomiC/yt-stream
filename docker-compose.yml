@@ -32,7 +32,13 @@ services:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
-    command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
+      ICECAST_MAX_LISTENERS: "${ICECAST_MAX_LISTENERS:-2}"
+    # Copy into the writable location first (the entrypoint's sed -i cannot
+    # rename over a bind mount); apply the cap — start.sh only seds credentials.
+    command: >-
+      sh -c "cp /icecast.xml /etc/icecast2/icecast.xml &&
+      sed -i \"s|<max-listeners>[^<]*</max-listeners>|<max-listeners>$${ICECAST_MAX_LISTENERS}</max-listeners>|g\" /etc/icecast2/icecast.xml &&
+      exec /start.sh"
     restart: unless-stopped
     deploy:
       resources:

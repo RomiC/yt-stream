@@ -308,8 +308,8 @@ export class Stream {
 
   /**
    * Fetches the current state and builds the snapshot for /health: each
-   * process's liveness, Icecast availability/state, and the general stream
-   * state + URL. Independent of the TTL watcher.
+   * process's liveness, Icecast availability/state/listener count, and the
+   * general stream state + URL. Independent of the TTL watcher.
    */
   async getStatus() {
     const icecastStatus = await this.#icecast.getStatus();
@@ -318,7 +318,8 @@ export class Stream {
       ...(set ? set.getStatus() : { streamlink: { status: 'stopped' }, ffmpeg: { status: 'stopped' } }),
       icecast: {
         status: icecastStatus.icecastReachable ? 'available' : 'unavailable',
-        state: icecastStatus.mountpointActive ? 'streaming' : 'stopped'
+        state: icecastStatus.mountpointActive ? 'streaming' : 'stopped',
+        listeners: icecastStatus.listeners
       },
       general: {
         state: set ? set.phase : 'idle',

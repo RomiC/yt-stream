@@ -37,7 +37,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
   → 500 extraction/transcode/icecast failure
 ```
 
-**Status:** served by `/api/health` (which includes the current stream state); `GET /api/stream` without a `url` returns `400` — the endpoint is start-only.
+**Status:** served by `/api/health` (includes the current stream state and the Icecast listener count); `GET /api/stream` without a `url` returns `400` — the endpoint is start-only.
 
 **Concurrency:** one in-flight operation at a time. The route holds a `requestInProgress` flag; concurrent start/delete requests are dropped with `429`.
 
@@ -82,7 +82,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 ### 3.3 Listener limit
 
 - `ICECAST_MAX_LISTENERS` env var, **default 2**.
-- Enforced in Icecast (`<max-listeners>` per mount) and again in the app — Stream's TTL watcher polls the listener count and stops on a violation (defense in depth).
+- Enforced by Icecast alone (`<max-listeners>` per mount — excess clients are rejected at connect time). The cap is injected into the Icecast config by its container's start command and never reaches the service: the app is unaware of it.
 
 ### 3.4 HTTPS
 
@@ -133,11 +133,13 @@ Drop the explicit state machine entirely. The single-flight `requestInProgress` 
 ```js
 // a StreamPipeline
 current = {
-  id,            // unique per generation
-  url,           // YouTube URL
-  startedAt,     // when the mount became active (for uptime)
-  streamlink, ffmpeg, ttlWatcher,  // owned by this pipeline
-  phase,         // 'starting' | 'streaming' | 'stopped'  — derived from process liveness + mount readiness
+  id, // unique per generation
+  url, // YouTube URL
+  startedAt, // when the mount became active (for uptime)
+  streamlink,
+  ffmpeg,
+  ttlWatcher, // owned by this pipeline
+  phase, // 'starting' | 'streaming' | 'stopped'  — derived from process liveness + mount readiness
 };
 ```
 
@@ -156,28 +158,28 @@ Background concerns are observed directly, without the bus: `StreamPipeline` is 
 
 A small pub/sub bus carries the outward stream lifecycle notifications — Stream is the only emitter, `index.js` (logging) the consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired`, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent) with `{ code, signal, pid, errors }` — the signal makes external kills (OOM, `docker kill`) self-explaining.
 
-| Event               | Emitted by            | Consumed by      |
-| ------------------- | --------------------- | ---------------- |
-| `stream:started`    | stream                | logging          |
-| `stream:stopped`    | stream                | logging          |
-| `stream:error`      | stream                | logging          |
+| Event            | Emitted by | Consumed by |
+| ---------------- | ---------- | ----------- |
+| `stream:started` | stream     | logging     |
+| `stream:stopped` | stream     | logging     |
+| `stream:error`   | stream     | logging     |
 
 Every pipeline teardown declares its reason — `stream:stopped` carries one of `manual`, `replaced`, `process-exit` or `ttl`. A replace records the old stream's end **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for; a failed start itself surfaces as `stream:error` (it never emitted `stream:started`).
 
 ### 4.4 Configuration (env vars)
 
-| Variable                     | Default      | Purpose                                 |
-| ---------------------------- | ------------ | --------------------------------------- |
-| `API_KEY`                    | _(required)_ | API auth                                |
-| `ALLOW_KEY_IN_QUERY`         | `false`      | Allow `?key=` query auth                |
-| `PUBLIC_BASE_URL`             | `http://localhost` | Public base URL: Caddy site address + absolute URLs |
-| `ICECAST_MAX_LISTENERS`      | `2`          | Per-mount listener cap                  |
-| `STREAM_TTL_MINUTES`         | `15`         | Auto-stop after N min of zero listeners (polled every 60s) |
-| `ICECAST_SOURCE_PASSWORD`    | —            | Source auth (ffmpeg → Icecast)          |
-| `ICECAST_ADMIN_PASSWORD`     | —            | Admin API auth (internal polling)       |
-| `PROXY_FILE`                 | —            | JSON array of proxy URLs → `config.proxyList` |
-| `STREAMLINK_QUALITY`         | `audio_only,worst` | streamlink `--default-stream`    |
-| `LOG_LEVEL`                  | `info`       | pino log level                          |
+| Variable                  | Default            | Purpose                                                    |
+| ------------------------- | ------------------ | ---------------------------------------------------------- |
+| `API_KEY`                 | _(required)_       | API auth                                                   |
+| `ALLOW_KEY_IN_QUERY`      | `false`            | Allow `?key=` query auth                                   |
+| `PUBLIC_BASE_URL`         | `http://localhost` | Public base URL: Caddy site address + absolute URLs        |
+| `ICECAST_MAX_LISTENERS`   | `2`                | Per-mount listener cap (Icecast only)                      |
+| `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N min of zero listeners (polled every 60s) |
+| `ICECAST_SOURCE_PASSWORD` | —                  | Source auth (ffmpeg → Icecast)                             |
+| `ICECAST_ADMIN_PASSWORD`  | —                  | Admin API auth (internal polling)                          |
+| `PROXY_FILE`              | —                  | JSON array of proxy URLs → `config.proxyList`              |
+| `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink `--default-stream`                              |
+| `LOG_LEVEL`               | `info`             | pino log level                                             |
 
 ---
 
