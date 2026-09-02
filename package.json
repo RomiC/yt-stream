@@ -13,7 +13,7 @@
     "format:check": "oxfmt -c oxfmt.config.mjs --check"
   },
   "dependencies": {
-    "fastify": "5.11.3"
+    "fastify": "5.12.1"
   },
   "engines": {
     "node": ">=24.0.0"
