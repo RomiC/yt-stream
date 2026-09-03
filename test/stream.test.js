@@ -1,7 +1,7 @@
-import { describe, before, test, mock } from 'node:test';
+import { describe, before, test, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventBus, Event } from '../src/events.js';
-import { silentLogger, flushAsync } from './helpers.js';
+import { silentLogger, flushAsync, sleep } from './helpers.js';
 
 const URL = 'https://youtube.com/watch?v=abc';
 const SOURCE_URL = 'icecast://source:testsource@icecast:8000/stream';
@@ -14,6 +14,8 @@ let ttlWatcherInstances = [];
 let StreamlinkFake;
 let FfmpegFake;
 let Stream;
+let youtubeMeta = Promise.resolve(null);
+let getYoutubeMetaFake = mock.fn(() => youtubeMeta);
 
 before(async (ctx) => {
   icecastInstances = [];
@@ -31,6 +33,7 @@ before(async (ctx) => {
       Icecast: class FakeIcecast {
         constructor() {
           this.status = { icecastReachable: true, mountpointActive: true, listeners: 0 };
+          this.setMetadata = mock.fn(() => Promise.resolve(true));
           icecastInstances.push(this);
         }
 
@@ -148,6 +151,12 @@ before(async (ctx) => {
   FfmpegFake = FakeFfmpeg;
   ctx.mock.module('../src/ffmpeg.js', { exports: { Ffmpeg: FfmpegFake } });
 
+  ctx.mock.module('../src/utils/getYoutubeMeta.js', {
+    exports: {
+      getYoutubeMeta: getYoutubeMetaFake
+    }
+  });
+
   ctx.mock.module('../src/ttlWatcher.js', {
     exports: {
       TTLWatcher: class FakeTTLWatcher {
@@ -183,6 +192,10 @@ before(async (ctx) => {
   ({ Stream } = await import('../src/stream.js'));
 });
 
+beforeEach(() => {
+  youtubeMeta = Promise.resolve(null);
+  getYoutubeMetaFake.mock.resetCalls();
+});
 /**
  * Builds a Stream with fresh fakes. The per-set instances (streamlink, ffmpeg,
  * ttlWatcher) are getters that resolve to the CURRENT set at access time — so
@@ -255,6 +268,34 @@ describe('Stream', () => {
 
       assert.equal(app.streamlink.spawnCalls.length, 1);
       assert.deepEqual(app.ttlWatcher.watched, [URL]);
+    });
+
+    test('should fetch youtube meta and post to icecast', async () => {
+      const { promise: youtubeMetaPromise, resolve: resolveYoutubeMetaPromise } = Promise.withResolvers();
+      youtubeMeta = youtubeMetaPromise;
+
+      const app = createStream();
+      const onStarted = mock.fn();
+      app.events.on(Event.streamStarted, onStarted);
+
+      const startPromise = app.stream.start(URL);
+
+      await sleep(0);
+
+      assert.deepEqual(getYoutubeMetaFake.mock.callCount(), 1, 'should retrieve Youtube data');
+      assert.deepEqual(getYoutubeMetaFake.mock.calls[0].arguments[0], URL, 'should request w/ stream URL');
+
+      resolveYoutubeMetaPromise({
+        title: 'lofi hip-hop',
+        author_name: 'LoFi Girl'
+      });
+
+      await sleep(0);
+
+      assert.deepEqual(app.icecast.setMetadata.mock.callCount(), 1, 'should pass data to Icecast');
+      assert.deepEqual(app.icecast.setMetadata.mock.calls[0].arguments[0], 'LoFi Girl - lofi hip-hop');
+
+      await startPromise;
     });
 
     test('fail fast: unreachable Icecast rejects before spawning', async () => {

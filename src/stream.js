@@ -3,6 +3,7 @@ import { Event } from './events.js';
 import { Ffmpeg } from './ffmpeg.js';
 import { Icecast, IcecastUnreachableError } from './icecast.js';
 import { TTLWatcher } from './ttlWatcher.js';
+import { getYoutubeMeta } from './utils/getYoutubeMeta.js';
 
 const MOUNTPOINT_TIMEOUT = 30_000; // streamlink open + ffmpeg connecting to Icecast
 const POLL_INTERVAL = 500;
@@ -272,6 +273,8 @@ export class Stream {
       await set.start(this.#icecast.sourceUrl);
       this.#logger.info({ proxy: set.lastProxy }, 'starting streamlink');
       set.ttlWatcher.watch(youtubeUrl);
+
+      this.#updateMetadata(youtubeUrl);
       this.#events.emit(Event.streamStarted, { url: youtubeUrl });
     } catch (err) {
       this.#logger.error({ err: err.message }, 'failed to start stream');
@@ -290,6 +293,21 @@ export class Stream {
     const set = this.#current;
     // Keep the stopped set as `#current` so /health can report the last state.
     await this.#stopPipeline(set, 'manual');
+  }
+
+  async #updateMetadata(youtubeUrl) {
+    const metadata = await getYoutubeMeta(youtubeUrl);
+
+    this.#logger.info(
+      metadata && { title: metadata.title, author_name: metadata.author_name },
+      'Stream metadata fetched'
+    );
+
+    if (metadata && this.#current && this.#current.phase === 'streaming' && this.#current.url === youtubeUrl) {
+      const title = `${metadata.author_name} - ${metadata.title}`;
+
+      await this.#icecast.setMetadata(title);
+    }
   }
 
   #exitFacts(exit) {

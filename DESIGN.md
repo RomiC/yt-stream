@@ -96,6 +96,7 @@ Manages the single stream's full lifecycle.
 2. **Transcode & stream** — `ffmpeg` reads streamlink's output from stdin, transcodes to MP3 (libmp3lame) at 128 kbps, and pushes to Icecast via the `icecast://` protocol. ffmpeg never touches YouTube directly.
 3. **Health monitoring** — watches the pipeline (streamlink + ffmpeg); if either exits unexpectedly, transitions to `STOPPED`. Send another `GET /stream?url=...` to restart.
 4. **Listener polling** — periodically queries Icecast's `/admin/listmounts` XML API to count listeners and verify the mountpoint is active (15s interval). When `listeners == 0` for `STREAM_TTL_MINUTES` (default 15 min), the pipeline is torn down and the state transitions to `STOPPED`.
+5. **Metadata** — after the mountpoint becomes active, fetches the stream's title/author via YouTube oEmbed and pushes `<author> - <title>` to Icecast's `/admin/metadata` `updinfo` endpoint so clients display the live title. Best-effort: unavailable metadata never fails the stream.
 
 **Pipeline command:**
 
@@ -112,6 +113,7 @@ Industry-standard streaming server (off-the-shelf, no custom code).
 
 - **Single fixed mountpoint** — `/stream`. No dynamic mountpoint creation.
 - **ICY protocol** — injects `icy-name`, `icy-genre`, `icy-br` headers so radio receivers display metadata correctly.
+- **Dynamic metadata** — accepts `GET /admin/metadata?...&mode=updinfo&song=<title>` updates so the live title/author is shown; set by the stream service after start.
 - **Admin API** — `GET /admin/listmounts` returns listener count and mountpoint status (polled by the Stream Manager every 15s).
 - **Configuration** — minimal; source password, admin password, hostname, and bind port.
 
@@ -284,6 +286,5 @@ The API would generate Liquidsoap configs and control them via Liquidsoap's teln
 - **Multiple bitrates / formats** — MP3 + AAC + Ogg at configurable quality levels
 - **Web UI** — simple dashboard showing active streams, listener counts, waveforms
 - **Stream scheduling** — start/stop streams at predetermined times
-- **Metadata passthrough** — forward YouTube title/artist as ICY `StreamTitle`
 - **Relay mode** — act as a repeater for an existing Icecast stream
 - **Recording** — archive streams to disk for time-shifted listening

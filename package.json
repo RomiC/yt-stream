@@ -16,7 +16,7 @@
     "fastify": "5.12.1"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.3.0"
   },
   "devDependencies": {
     "oxfmt": "0.64.0",

@@ -35,7 +35,15 @@ export class Icecast {
   }
 
   get #adminUrl() {
-    return `http://${this.#host}:${this.#port}/admin/listmounts`;
+    return `http://${this.#host}:${this.#port}/admin`;
+  }
+
+  get #listmountsUrl() {
+    return `${this.#adminUrl}/listmounts`;
+  }
+
+  get #metadataUrl() {
+    return `${this.#adminUrl}/metadata`;
   }
 
   get #authHeaders() {
@@ -71,7 +79,7 @@ export class Icecast {
    */
   async getStatus() {
     try {
-      const res = await fetch(this.#adminUrl, { headers: this.#authHeaders, signal: AbortSignal.timeout(5_000) });
+      const res = await fetch(this.#listmountsUrl, { headers: this.#authHeaders, signal: AbortSignal.timeout(5_000) });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -124,6 +132,25 @@ export class Icecast {
       await sleep(Math.min(this.#waitPollInterval, deadline - Date.now()));
     }
     throw new Error(active ? 'mountpoint never became active' : 'mountpoint never released');
+  }
+
+  async setMetadata(title) {
+    try {
+      const params = new URLSearchParams({
+        mount: MOUNTPOINT,
+        mode: 'updinfo',
+        song: title.replace(/[^\x20-\x7E]/g, '')
+      });
+
+      const res = await fetch(`${this.#metadataUrl}?${params.toString()}`, {
+        headers: this.#authHeaders,
+        signal: AbortSignal.timeout(5_000)
+      });
+
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 }
 

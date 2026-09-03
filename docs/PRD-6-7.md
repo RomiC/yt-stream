@@ -197,6 +197,7 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 - **auth** — header, query, missing/invalid key.
 - **routes** — status codes (400/401/429/500/302).
 - **utils/isValidYoutubeUrl** — SSRF cases.
+- **utils/getYoutubeMeta** — oEmbed fetch, non-2xx and network/parse failure → null.
 
 ### 5.2 Linting — `oxlint`
 
