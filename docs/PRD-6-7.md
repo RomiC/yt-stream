@@ -249,8 +249,13 @@ services:
 ```
 
 - Caddy: official `caddy:2-alpine` image (digest-pinned), static Caddyfile using env-var placeholders (`{$PUBLIC_BASE_URL}`).
-- `stream-service` / `icecast`: as today, but with no published ports and added hardening (read-only rootfs, dropped caps, no-new-privileges).
-- Deploy continues via the existing GitHub Actions SSH flow (pull + `docker compose up`).
+- `stream-service` / `icecast`: no published ports; hardened — read-only rootfs (tmpfs `/tmp` for scratch), `cap_drop: ALL`,
+  `no-new-privileges: true`, non-root users. Icecast runs as the image's own `icecast2` user (101:102): the root+sudo
+  `/start.sh` entrypoint is bypassed (sudo needs `CAP_SETUID`), and the compose command patches credentials and
+  `max-listeners` into a tmpfs copy of the config (`/etc/icecast2` stays intact — `/usr/share/icecast2` web/admin files
+  symlink into it).
+- Logging: every service logs to stdout/stderr → `docker logs` (pino, Caddy, Icecast via `/dev/stderr`, access log off).
+  `json-file` driver with rotation (10 MB × 3) on all services; `docker compose logs --timestamps` shows unified UTC stamps.
 
 ---
 

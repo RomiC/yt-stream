@@ -17,6 +17,11 @@ services:
     depends_on:
       - stream-service
       - icecast
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
@@ -33,12 +38,34 @@ services:
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
       ICECAST_MAX_LISTENERS: "${ICECAST_MAX_LISTENERS:-2}"
-    # Copy into the writable location first (the entrypoint's sed -i cannot
-    # rename over a bind mount); apply the cap — start.sh only seds credentials.
+    # Read-only rootfs: config is copied to a tmpfs /tmp and patched there
+    # (the bind mount is ro; /etc/icecast2 must stay intact — /usr/share/icecast2
+    # web/admin files are symlinks into it). /start.sh is unusable under
+    # cap_drop: ALL (its sudo user-switch needs CAP_SETUID), so exec icecast2
+    # directly as the image's icecast2 user (101:102) — port 8000 is unprivileged.
     command: >-
-      sh -c "cp /icecast.xml /etc/icecast2/icecast.xml &&
-      sed -i \"s|<max-listeners>[^<]*</max-listeners>|<max-listeners>$${ICECAST_MAX_LISTENERS}</max-listeners>|g\" /etc/icecast2/icecast.xml &&
-      exec /start.sh"
+      sh -c "cp /icecast.xml /tmp/icecast.xml &&
+      sed -i
+      -e \"s|<source-password>[^<]*</source-password>|<source-password>$${ICECAST_SOURCE_PASSWORD}</source-password>|\"
+      -e \"s|<relay-password>[^<]*</relay-password>|<relay-password></relay-password>|\"
+      -e \"s|<admin-password>[^<]*</admin-password>|<admin-password>$${ICECAST_ADMIN_PASSWORD}</admin-password>|\"
+      -e \"s|<hostname>[^<]*</hostname>|<hostname>$${ICECAST_HOSTNAME}</hostname>|\"
+      -e \"s|<max-listeners>[^<]*</max-listeners>|<max-listeners>$${ICECAST_MAX_LISTENERS}</max-listeners>|g\"
+      /tmp/icecast.xml &&
+      exec /usr/bin/icecast2 -c /tmp/icecast.xml"
+    user: "101:102"
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=102,mode=0750,size=1m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     deploy:
       resources:
@@ -68,6 +95,18 @@ services:
     restart: unless-stopped
     depends_on:
       - icecast
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
