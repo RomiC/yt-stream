@@ -97,8 +97,9 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 - **Container hardening** — non-root user, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges: true`.
 - **Icecast admin isolation** — admin API never exposed outside the internal network.
 - **Branch protection** on `main` (require PR + passing CI).
-- **Dependency & secret scanning** in CI — `npm audit`, Trivy image scan, `gitleaks`.
-- **Dependabot** — automated update PRs for npm, Docker, and GitHub Actions dependencies.
+- **Dependency & secret scanning** in CI — `npm audit` (gates on `critical`), `gitleaks`; GitHub **CodeQL** (default setup) for static analysis and **Dependabot security updates** for app-dependency CVEs.
+  - **Decision:** container-image **Trivy** scanning was dropped — its advisory DB re-rates CVEs over time (revisions can flip findings between CRITICAL and HIGH), making a severity gate non-deterministic. CodeQL + Dependabot give reproducible code & app-dependency coverage instead.
+- **Dependabot** — automated update PRs for npm and GitHub Actions; Docker ecosystem deferred until E2E tests exist to validate a base-image bump.
 
 ---
 
@@ -206,6 +207,7 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 ### 5.3 CI (GitHub Actions)
 
 - Run **lint + tests** on every PR open/update.
+- **Dependency & secret scanning** — `npm audit`, `gitleaks`; CodeQL + Dependabot (see §3.5).
 - Block merge when failing (via branch protection).
 
 ---

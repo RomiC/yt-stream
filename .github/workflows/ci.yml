@@ -8,14 +8,25 @@ on:
 
 jobs:
   lint-and-test:
+    name: Linting & testing
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+      - name: Configuring NodeJS environment
+        uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm test
+      - name: Installing dependencies
+        run: npm ci
+      - name: Running audit
+        run: npm audit --audit-level critical
+      - name: Checking formatting
+        run: npm run format:check
+      - name: Linting code
+        run: npm run lint
+      - name: Running tests
+        run: npm test

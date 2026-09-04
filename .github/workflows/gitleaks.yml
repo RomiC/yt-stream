@@ -1,0 +1,28 @@
+name: gitleaks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * 1" # run every Monday 9AM
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Secrets leak scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Checking passwords leaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

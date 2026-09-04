@@ -52,8 +52,8 @@ All dependencies — npm packages, Docker base images, Docker service images, an
 
 | Layer                    | What                   | How                                                                                                               | Update cadence                     |
 | ------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **npm**                  | `fastify`              | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Manual review with `npm outdated`  |
-| **Docker base image**    | `node:24-alpine`       | Pinned by digest: `node:24-alpine@sha256:d32cdf...`                                                               | Update when bumping Node or Alpine |
+| **npm**                  | `fastify`              | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Dependabot (npm ecosystem)  |
+| **Docker base image**    | `node:24-alpine`       | Pinned by digest: `node:24-alpine@sha256:e67514e5...`                                                               | Update when bumping Node or Alpine |
 | **Docker service image** | `moul/icecast`         | Pinned by digest: `moul/icecast@sha256:b35cd6...`                                                                 | Update when bumping Icecast        |
 | **apk packages**         | `ffmpeg`, `streamlink` | Exact version: `ffmpeg=8.1.2-r0`, `streamlink=8.4.0-r0`                                                           | Update when bumping any package    |
 
@@ -109,12 +109,12 @@ npm ci  # enforces package-lock.json hashes
 }
 ```
 
-> **Update policy:** Check for newer versions with `npm outdated` before bumping. Record the resolved URL + SHA-512 in `package-lock.json` (committed to repo).
+> **Update policy:** Dependabot (npm ecosystem) opens update PRs automatically. Merge and record the resolved URL + SHA-512 in `package-lock.json` (committed to repo).
 
 **Dockerfile** — base image pinned by digest, system packages pinned by version:
 
 ```dockerfile
-FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
 
 # System dependencies pinned to exact versions for reproducible builds.
 RUN apk add --no-cache \
