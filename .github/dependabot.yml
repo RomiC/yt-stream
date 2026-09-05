@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Maintain dependencies for GitHub Actions
+  - package-ecosystem: "github-actions"
+    assignees:
+      - "RomiC"
+    commit-message:
+      prefix: "chore(deps): 🆙 🛠️"
+    directory: "/"
+    labels:
+      - "dependencies"
+      - "dx"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "RomiC"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 3
+
+  # Maintain dependencies for npm
+  - package-ecosystem: "npm"
+    assignees:
+      - "RomiC"
+    commit-message:
+      prefix: "chore(deps): 🆙 📦"
+    directory: "/"
+    labels:
+      - "dependencies"
+      - "dx"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "RomiC"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 3
+    versioning-strategy: increase
