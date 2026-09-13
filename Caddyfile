@@ -1,6 +1,6 @@
 {$PUBLIC_BASE_URL} {
 	handle /api/* {
-		reverse_proxy stream-service:8080
+		reverse_proxy stream:8080
 	}
 	handle /stream {
 		reverse_proxy icecast:8000

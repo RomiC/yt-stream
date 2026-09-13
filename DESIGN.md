@@ -184,7 +184,7 @@ services:
           cpus: "0.25"
           memory: "256M"
 
-  stream-service:
+  stream:
     build: .
     image: yt-stream:latest
     ports:

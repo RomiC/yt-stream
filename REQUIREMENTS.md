@@ -415,7 +415,7 @@ services:
           cpus: "0.25"
           memory: "256M"
 
-  stream-service:
+  stream:
     build: .
     image: yt-stream:latest
     ports:
@@ -506,4 +506,4 @@ yt-stream/
 
 11. **Only advertised routes exposed** — no Icecast admin API, mountpoints, or internal endpoints leak through the service's HTTP port (8080).
 
-12. **Single `docker compose up`** brings up Icecast + stream-service, fully functional.
+12. **Single `docker compose up`** brings up Icecast + stream, fully functional.

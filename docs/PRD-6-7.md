@@ -48,13 +48,13 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 ### 3.1 Network exposure
 
 - **Caddy** is the only public entry point (ports 80/443).
-- `stream-service` and `icecast` bind **only** on the internal Docker network — no published host ports.
+- `stream` and `icecast` bind **only** on the internal Docker network — no published host ports.
 - Routing:
 
 ```
 {$PUBLIC_BASE_URL} {
     handle /api/* {
-        reverse_proxy stream-service:8080
+        reverse_proxy stream:8080
     }
     handle /stream {
         reverse_proxy icecast:8000
@@ -247,12 +247,12 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 ```yaml
 services:
   caddy: # public front door (80/443)
-  stream-service: # internal (8080, no host port)
+  stream: # internal (8080, no host port)
   icecast: # internal (8000, no host port)
 ```
 
 - Caddy: official `caddy:2-alpine` image (digest-pinned), static Caddyfile using env-var placeholders (`{$PUBLIC_BASE_URL}`).
-- `stream-service` / `icecast`: no published ports; hardened — read-only rootfs (tmpfs `/tmp` for scratch), `cap_drop: ALL`,
+- `stream` / `icecast`: no published ports; hardened — read-only rootfs (tmpfs `/tmp` for scratch), `cap_drop: ALL`,
   `no-new-privileges: true`, non-root users. Icecast runs as the image's own `icecast2` user (101:102): the root+sudo
   `/start.sh` entrypoint is bypassed (sudo needs `CAP_SETUID`), and the compose command patches credentials and
   `max-listeners` into a tmpfs copy of the config (`/etc/icecast2` stays intact — `/usr/share/icecast2` web/admin files

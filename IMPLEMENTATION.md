@@ -52,8 +52,8 @@ All dependencies — npm packages, Docker base images, Docker service images, an
 
 | Layer                    | What                   | How                                                                                                               | Update cadence                     |
 | ------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **npm**                  | `fastify`              | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Dependabot (npm ecosystem)  |
-| **Docker base image**    | `node:24-alpine`       | Pinned by digest: `node:24-alpine@sha256:e67514e5...`                                                               | Update when bumping Node or Alpine |
+| **npm**                  | `fastify`              | Exact version in `package.json` (`5.3.2`, no `^`/`~`). `package-lock.json` records resolved URL + integrity hash. | Dependabot (npm ecosystem)         |
+| **Docker base image**    | `node:24-alpine`       | Pinned by digest: `node:24-alpine@sha256:e67514e5...`                                                             | Update when bumping Node or Alpine |
 | **Docker service image** | `moul/icecast`         | Pinned by digest: `moul/icecast@sha256:b35cd6...`                                                                 | Update when bumping Icecast        |
 | **apk packages**         | `ffmpeg`, `streamlink` | Exact version: `ffmpeg=8.1.2-r0`, `streamlink=8.4.0-r0`                                                           | Update when bumping any package    |
 
@@ -459,7 +459,7 @@ if (saved && (saved.state === "streaming" || saved.state === "starting")) {
 }
 ```
 
-**Acceptance:** Start a stream, `docker compose restart stream-service`, verify stream auto-resumes.
+**Acceptance:** Start a stream, `docker compose restart stream`, verify stream auto-resumes.
 
 ---
 
@@ -543,7 +543,7 @@ export function createHealth(streamManager, icecastClient) {
 7. `curl "http://localhost:8080/stream?url=<different>"` → `302` (old killed, new started).
 8. `curl -X DELETE http://localhost:8080/stream` → `{"state":"stopped",...}`.
 9. `curl http://localhost:8080/stream` → `{"state":"idle"}`.
-10. `docker compose restart stream-service` → after restart, `GET /stream` shows `streaming` with the old URL.
+10. `docker compose restart stream` → after restart, `GET /stream` shows `streaming` with the old URL.
 11. Disconnect all listeners, wait 15 min → stream auto-stops.
 12. `docker compose down` → all containers stop cleanly.
 

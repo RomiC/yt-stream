@@ -15,7 +15,7 @@ services:
       - caddy-config:/config
     restart: unless-stopped
     depends_on:
-      - stream-service
+      - stream
       - icecast
     logging:
       driver: json-file
@@ -73,8 +73,10 @@ services:
           cpus: "0.25"
           memory: "256M"
 
-  stream-service:
-    build: .
+  stream:
+    build: 
+      context: .
+      dockerfile: ./stream.dockerfile
     image: yt-stream:latest
     volumes:
       - stream-data:/app/data
