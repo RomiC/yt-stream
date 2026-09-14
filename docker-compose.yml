@@ -75,8 +75,8 @@ services:
 
   stream:
     build: 
-      context: .
-      dockerfile: ./stream.dockerfile
+      context: ./packages/stream/
+      dockerfile: ./Dockerfile
     image: yt-stream:latest
     volumes:
       - stream-data:/app/data

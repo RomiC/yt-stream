@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 
 /**
- * The outward notifications emitted by Stream on the bus (PRD §4.3).
+ * The outward notifications emitted by Stream on the bus.
  * Subscribe and emit with these constants project-wide — never raw string
  * literals.
  *

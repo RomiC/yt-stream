@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 
-/** Pino redact rules — scrubs the `key` query param from logged request URLs (PRD §3.5). */
+/** Pino redact rules — scrubs the `key` query param from logged request URLs. */
 export const logRedact = {
   paths: ['req.url'],
   censor: redactApiKey
@@ -52,7 +52,7 @@ function keysMatch(provided, expected) {
   return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
 }
 
-/** API key auth for every route registered on `app` (PRD §3.2). Must run before route registration. */
+/** API key auth for every route registered on `app`. Must run before route registration. */
 export function registerAuth(app, { config }) {
   app.addHook('onRequest', async (request, reply) => {
     const provided = extractApiKey(request, config.allowKeyInQuery);

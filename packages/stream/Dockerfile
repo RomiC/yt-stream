@@ -8,12 +8,13 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev \
-    && npm cache clean --force
+COPY package.json ./
+RUN npm install && \
+    npm cache clean --force
 
 COPY src/ ./src/
-RUN mkdir -p /app/data && chown -R node:node /app/data
+RUN mkdir -p /app/data && \
+    chown -R node:node /app/data
 
 USER node
 
