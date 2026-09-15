@@ -10,7 +10,7 @@ services:
     environment:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./packages/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     restart: unless-stopped
@@ -32,7 +32,7 @@ services:
     image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
     platform: linux/amd64
     volumes:
-      - ./icecast.xml:/icecast.xml:ro
+      - ./packages/icecast/icecast.xml:/icecast.xml:ro
     environment:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
@@ -74,7 +74,7 @@ services:
           memory: "256M"
 
   stream:
-    build: 
+    build:
       context: ./packages/stream/
       dockerfile: ./Dockerfile
     image: yt-stream:latest
