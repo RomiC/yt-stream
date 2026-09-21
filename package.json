@@ -33,6 +33,7 @@
     "fastify": "5.12.1"
   },
   "devDependencies": {
+    "@types/node": "24.13.5",
     "oxfmt": "0.66.0",
     "oxlint": "1.81.0"
   }
