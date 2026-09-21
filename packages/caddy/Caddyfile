@@ -9,3 +9,9 @@
 		respond 404
 	}
 }
+
+:8089 {
+	handle /hc {
+		respond 200
+	}
+}

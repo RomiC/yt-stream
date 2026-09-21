@@ -7,6 +7,9 @@ services:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
       - "${HTTPS_PORT:-443}:443/udp"
+    expose:
+      # Caddy health check port
+      - 8089
     environment:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
     volumes:
@@ -114,6 +117,40 @@ services:
         limits:
           cpus: "0.5"
           memory: "256M"
+
+  health:
+    build:
+      context: ./
+      dockerfile: packages/Dockerfile.node
+      args:
+        SERVICE: health
+    image: yt-stream-health:latest
+    ports:
+      - "${HEALTH_PORT:-8080}:8080"
+    environment:
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    restart: unless-stopped
+    depends_on:
+      - icecast
+      - stream
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "128M"
 
 volumes:
   stream-data:
