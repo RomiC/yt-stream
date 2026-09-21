@@ -157,78 +157,18 @@ No persistent state. Streams start fresh on each request and on service restart.
 
 ---
 
-## Deployment (Docker Compose)
-
-```yaml
-name: yt-stream
-
-services:
-  icecast:
-    image: moul/icecast@sha256:b35cd6367327335b51b989c277e6feaff7cd61d65846ec7fee361c6eb1cea620
-    platform: linux/amd64
-    ports:
-      - "${ICECAST_PORT:-8871}:8000"
-    volumes:
-      - ./icecast.xml:/icecast.xml:ro
-    environment:
-      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
-      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_HOSTNAME: "${ICECAST_HOSTNAME:-localhost}"
-    # Copy our config into the writable location first — the image entrypoint
-    # uses sed -i which cannot rename over a Docker bind-mounted file.
-    command: sh -c "cp /icecast.xml /etc/icecast2/icecast.xml && exec /start.sh"
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: "256M"
-
-  stream-service:
-    build: .
-    image: yt-stream:latest
-    ports:
-      - "${PORT:-8870}:8080"
-    volumes:
-      - stream-data:/app/data
-      - ./proxy.json:/app/proxy.json:ro # user-provided proxy list for streamlink
-    environment:
-      PORT: "8080"
-      ICECAST_HOST: icecast
-      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
-      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
-      ICECAST_PORT: "${ICECAST_PORT:-8871}" # public port for redirect URLs only
-      PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
-      DATA_DIR: /app/data
-      LOG_LEVEL: "${LOG_LEVEL:-info}"
-      STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
-      PROXY_FILE: "${PROXY_FILE:-}"
-      STREAMLINK_QUALITY: "${STREAMLINK_QUALITY:-audio_only,worst}"
-    restart: unless-stopped
-    depends_on:
-      - icecast
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "256M" # streamlink + ffmpeg + node
-
-volumes:
-  stream-data:
-```
-
----
-
 ## Directory Structure
 
 ```
 yt-stream/
-├── src/
-│   ├── index.js            # Entry point, Fastify app setup, routes
-│   ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL   *(removed by the refactor)*
-│   ├── proxy-list.js       # Reads proxy.json and returns the proxy list             *(now Config)*
-│   ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status) *(now icecast.js)*
-│   └── health.js           # Health check logic (component status aggregation)       *(now healthMonitor.js)*
+├── packages/
+│   └── stream/             # Stream application
+│       └── src/
+│           ├── index.js            # Entry point, Fastify app setup, routes
+│           ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL   *(removed by the refactor)*
+│           ├── proxy-list.js       # Reads proxy.json and returns the proxy list             *(now Config)*
+│           ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status) *(now icecast.js)*
+│           └── health.js           # Health check logic (component status aggregation)       *(now healthMonitor.js)*
 ├── proxy.json              # User-provided proxy list (JSON array of URL strings)
 ├── Dockerfile
 ├── docker-compose.yml
@@ -263,28 +203,8 @@ JSON structured logs to stdout via [pino](https://github.com/pinojs/pino) (Fasti
 
 ---
 
-## Alternative: Liquidsoap Variant
-
-> **Deferred** — not in PoC scope.
-
-For **radio-grade** reliability (silence detection, automatic failover, jingle/hook injection), `streamlink + ffmpeg` could be replaced with Liquidsoap:
-
-```liquidsoap
-s = input.ytdl("https://youtube.com/watch?v=...")
-s = mksafe(s)
-output.icecast(%mp3(bitrate=128), mount="/stream",
-  host="localhost", port=8000, password="secret", s)
-```
-
-The API would generate Liquidsoap configs and control them via Liquidsoap's telnet server — more complex to orchestrate but rock-solid for 24/7 operation.
-
----
-
 ## Future Enhancements
 
 - **Multi-stream support** — manage multiple concurrent YouTube → Icecast pipelines
 - **Multiple bitrates / formats** — MP3 + AAC + Ogg at configurable quality levels
 - **Web UI** — simple dashboard showing active streams, listener counts, waveforms
-- **Stream scheduling** — start/stop streams at predetermined times
-- **Relay mode** — act as a repeater for an existing Icecast stream
-- **Recording** — archive streams to disk for time-shifted listening

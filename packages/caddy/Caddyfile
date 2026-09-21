@@ -1,0 +1,17 @@
+{$PUBLIC_BASE_URL} {
+	handle /api/* {
+		reverse_proxy stream:8080
+	}
+	handle /stream {
+		reverse_proxy icecast:8080
+	}
+	handle {
+		respond 404
+	}
+}
+
+:8089 {
+	handle /hc {
+		respond 200
+	}
+}

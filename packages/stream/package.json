@@ -1,0 +1,42 @@
+{
+  "name": "yt-stream-stream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Main YouTube Stream application",
+  "keywords": [
+    "stream",
+    "ffmpeg",
+    "streamlink"
+  ],
+  "homepage": "https://github.com/RomiC/yt-stream#readme",
+  "bugs": {
+    "url": "https://github.com/RomiC/yt-stream/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RomiC/yt-stream.git"
+  },
+  "license": "MIT",
+  "author": "Roman Charugin <romic+github@fastmail.com>",
+  "type": "module",
+  "main": "src/index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --experimental-test-module-mocks --test 'tests/**/*.test.js'",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "fastify": "5.12.1",
+    "yt-stream-shared": "1.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+# Build context is the repo root; the shared Node Dockerfile needs only
+# root manifests, the lockfile and package sources.
+.git
+.github
+.pi
+.DS_Store
+**/node_modules
+**/tests
+docs
+*.md
+*.log
+data
+.env*
+jsconfig.json
+.oxfmtrc.json
+.oxlintrc.json
+proxy.json
+docker-compose.yml

@@ -415,7 +415,7 @@ services:
           cpus: "0.25"
           memory: "256M"
 
-  stream-service:
+  stream:
     build: .
     image: yt-stream:latest
     ports:
@@ -430,7 +430,6 @@ services:
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_PORT: "${ICECAST_PORT:-8871}" # public port for redirect URLs only
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
-      DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
       PROXY_FILE: "${PROXY_FILE:-}"
@@ -506,4 +505,4 @@ yt-stream/
 
 11. **Only advertised routes exposed** — no Icecast admin API, mountpoints, or internal endpoints leak through the service's HTTP port (8080).
 
-12. **Single `docker compose up`** brings up Icecast + stream-service, fully functional.
+12. **Single `docker compose up`** brings up Icecast + stream, fully functional.
