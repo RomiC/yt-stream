@@ -79,11 +79,17 @@ export class Icecast {
    */
   async getStatus() {
     try {
-      const res = await fetch(this.#listmountsUrl, { headers: this.#authHeaders, signal: AbortSignal.timeout(5_000) });
+      const res = await fetch(this.#listmountsUrl, {
+        headers: this.#authHeaders,
+        signal: AbortSignal.timeout(5_000)
+      });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      return { icecastReachable: true, ...this.#parseListeners(await res.text()) };
+      return {
+        icecastReachable: true,
+        ...this.#parseListeners(await res.text())
+      };
     } catch (err) {
       this.#logger.warn({ err: err.message }, 'icecast poll failed');
       return { icecastReachable: false, mountpointActive: false, listeners: 0 };

@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["import"],
+  "categories": { "correctness": "error" },
+  "rules": {
+    "curly": "error",
+    "id-length": ["error", { "min": 3, "exceptions": ["on", "id", "ok", "_", "__"] }],
+    "import/named": "error"
+  },
+  "env": { "builtin": true, "node": true }
+}
