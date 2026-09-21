@@ -8,7 +8,7 @@ The PoC proved the core concept. This document defines the requirements for the 
 
 ### Guiding principles
 
-- **Single entry point** — one public URL path; internal services are never exposed.
+- **Single entry point** — the application is reachable only through Caddy (one public URL path); the health monitor is the single deliberate exception, published on its own port (§2.1).
 - **Convenience preserved** — a client can still start and tune into a stream with a single `GET` request.
 - **Minimal dependencies** — Node built-ins where possible, only battle-tested external components.
 - **Fail loud** — a failed start fails the HTTP request; no hidden retry loops.
@@ -23,7 +23,7 @@ The API moves under an `/api/` prefix to avoid collision with the `/stream` audi
 | -------- | --------------------- | ---- | --------------------------------------------- |
 | `GET`    | `/api/stream?url=...` | ✅   | Start a stream; `302` redirect to audio mount |
 | `DELETE` | `/api/stream`         | ✅   | Stop the current stream                       |
-| `GET`    | `/api/health`         | ✅   | Component health (JSON)                       |
+| `GET`    | `/api/state`          | —    | Service state + health verdict (JSON)         |
 | `GET`    | `/stream`             | —    | Audio mount (Icecast, public)                 |
 
 **Start flow (single request):**
@@ -37,9 +37,24 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
   → 500 extraction/transcode/icecast failure
 ```
 
-**Status:** served by `/api/health` (includes the current stream state and the Icecast listener count); `GET /api/stream` without a `url` returns `400` — the endpoint is start-only.
+**Status:** served by `/api/state` (includes the current stream state and the Icecast listener count); `GET /api/stream` without a `url` returns `400` — the endpoint is start-only.
 
 **Concurrency:** one in-flight operation at a time. The route holds a `requestInProgress` flag; concurrent start/delete requests are dropped with `429`.
+
+### 2.1 Health monitor (`/hc`)
+
+A dedicated `health` container (#18) is an independent failure domain: it probes the components from the outside over plain HTTP and aggregates the result. It is the only service besides Caddy with a published host port.
+
+| Method | Path                        | Auth | Purpose                          |
+| ------ | --------------------------- | ---- | -------------------------------- |
+| `GET`  | `/hc` (alias `/health`)     | —    | Aggregated component health      |
+
+- **Probes** (2 s timeout each, run concurrently): `stream` → `GET stream:8080/api/state`; `icecast` → `GET icecast:8080/admin/stats` (basic auth, admin password); `caddy` → `GET caddy:8089/hc` (Caddy's own static liveness route, internal-only).
+- **Response:** `{ caddy, icecast, stream }`, each `{ result: 'ok' | 'error', duration, error? }`. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
+- A failing **or hanging** component never takes the monitor down: every probe wraps in try/catch with its own timeout.
+- **Unauthenticated by decision** — external probers cannot send auth headers. The endpoint exposes component status only, no control surface.
+- **Rate limited** — 60 requests/minute per client (`429` beyond); the limiter is registered before the routes so both `/hc` and `/health` are covered.
+- Host-resource checks (disk/memory) were considered and **descoped**: the monitor observes service components, not the machine.
 
 ---
 
@@ -47,7 +62,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 
 ### 3.1 Network exposure
 
-- **Caddy** is the only public entry point (ports 80/443).
+- **Caddy** is the application's entry point (host ports `HTTP_PORT`/`HTTPS_PORT`, default 80/443). The `health` monitor is published separately on `HEALTH_PORT` (default 8080) — the only other exposed surface, by decision (§2.1).
 - `stream` and `icecast` bind **only** on the internal Docker network — no published host ports.
 - Routing:
 
@@ -57,10 +72,17 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
         reverse_proxy stream:8080
     }
     handle /stream {
-        reverse_proxy icecast:8000
+        reverse_proxy icecast:8080
     }
     handle {
         respond 404
+    }
+}
+
+# Caddy's own liveness route — internal only (CaddyCheck target)
+:8089 {
+    handle /hc {
+        respond 200
     }
 }
 ```
@@ -76,8 +98,9 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 - **Dual mode:**
 - Header: `Authorization: Bearer <key>`
 - Query param: `?key=<key>` — enabled only when `ALLOW_KEY_IN_QUERY=true`
-- Applies to all `/api/*` endpoints including `/api/health`.
+- Applies to all `/api/*` endpoints **except `/api/state`** — see the decision below.
 - The `/stream` audio mount is **not** key-protected (radio receivers cannot send headers).
+- **Decision (#18) — `/api/state` is key-exempt:** the health monitor and plain status probers cannot attach auth headers. The endpoint is read-only status (no control) and is also reachable publicly through Caddy's `/api/*` routing. Accepted exposure: stream state, listener count, component statuses. Revisit if the payload grows more sensitive.
 
 ### 3.3 Listener limit
 
@@ -107,24 +130,35 @@ GET /api/stream?url=https://youtube.com/watch?v=...&key=<key>
 
 ### 4.1 Module decomposition
 
-Replace the monolithic `stream-manager.js` with focused modules:
+The monolith decomposes into an npm-workspaces monorepo — each service owns a package, `yt-stream-shared` holds the common env `Config`:
 
 ```
-src/
-├── events.js         # event bus + exported Event map (stream:* notifications)
-├── childProcess.js   # base class: process lifecycle, kill, ships stderr to the owner via the exit payload
-├── streamlink.js     # streamlink process: fetch the stream
-├── ffmpeg.js         # ffmpeg process: transcode stdin → Icecast output URL
-├── icecast.js        # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
-├── healthMonitor.js  # /health facade: status snapshot + ok/failure verdict
-├── stream.js         # orchestration: StreamPipeline (per-generation pipeline: processes, readiness, derived phase) + live-pipelines map; status snapshot
-├── ttlWatcher.js     # zero-listener TTL: polls Icecast, notifies owner via onExpired
-├── auth.js           # API key validation (Fastify hook)
-├── routes.js         # HTTP handlers
-├── config.js         # env config
-├── utils/
-│   └── isValidYoutubeUrl.js  # SSRF-guard URL validation
-└── index.js          # bootstrap
+packages/
+├── shared/                     # yt-stream-shared — env Config shared by all services
+│   ├── lib/config.js           #   immutable env config (constructor takes an env object)
+│   └── index.js                #   public exports
+├── stream/src/
+│   ├── events.js               # event bus + exported Event map (stream:* notifications)
+│   ├── childProcess.js         # base class: process lifecycle, kill, ships stderr to the owner via the exit payload
+│   ├── streamlink.js           # streamlink process: fetch the stream
+│   ├── ffmpeg.js               # ffmpeg process: transcode stdin → Icecast output URL
+│   ├── icecast.js              # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
+│   ├── serviceState.js         # /api/state facade: status snapshot + ok/failure verdict
+│   ├── stream.js               # orchestration: StreamPipeline (per-generation) + live-pipelines map; status snapshot
+│   ├── ttlWatcher.js           # zero-listener TTL: polls Icecast, notifies owner via onExpired
+│   ├── auth.js                 # API key validation (Fastify hook; exempts /api/state)
+│   ├── routes.js               # HTTP handlers
+│   ├── utils/
+│   │   ├── isValidYoutubeUrl.js  # SSRF-guard URL validation
+│   │   └── getYoutubeMeta.js     # YouTube oEmbed metadata
+│   └── index.js                # bootstrap
+└── health/src/
+    ├── check.js                # base class: timed check envelope (result / duration / error)
+    ├── streamCheck.js          # GET stream:8080/api/state
+    ├── icecastCheck.js         # GET icecast:8080/admin/stats (basic auth)
+    ├── caddyCheck.js           # GET caddy:8089/hc — Caddy's own liveness route
+    ├── config.js               # check constants (timeout)
+    └── routes.js               # /hc + /health aggregation
 ```
 
 ### 4.2 Control flow — no state machine
@@ -153,7 +187,7 @@ current = {
 5. the pipeline polls the Icecast mountpoint (30s budget) and fails fast when a process exits (attributed with its exit code/signal and stderr)
 6. any step throwing fails the request (`500`); no retries
 
-Background concerns are observed directly, without the bus: `StreamPipeline` is the subscription unit for its own pipeline — it wires both process wrappers and the TTL watcher, exposing `onExit` (unexpected exits only, deliberate kills stay silent) and `onExpired`. Operational logging is centralized in Stream — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8000, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
+Background concerns are observed directly, without the bus: `StreamPipeline` is the subscription unit for its own pipeline — it wires both process wrappers and the TTL watcher, exposing `onExit` (unexpected exits only, deliberate kills stay silent) and `onExpired`. Operational logging is centralized in Stream — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging. On expiry the TTL watcher stops itself; Stream reacts by stopping the pipeline. A stream that lost its source (mount gone) is stopped by the same TTL watcher (no listeners → TTL). An unreachable Icecast counts as zero listeners — admin, source and listeners share port 8080, so nobody can be listening — which also reaps a blackholed pipeline where ffmpeg blocks silently without exiting.
 
 ### 4.3 Event bus
 
@@ -171,16 +205,21 @@ Every pipeline teardown declares its reason — `stream:stopped` carries one of 
 
 | Variable                  | Default            | Purpose                                                    |
 | ------------------------- | ------------------ | ---------------------------------------------------------- |
-| `API_KEY`                 | _(required)_       | API auth                                                   |
+| `API_KEY`                 | dev fallback       | API auth (falls back to `dev-api-key` + startup warning)  |
 | `ALLOW_KEY_IN_QUERY`      | `false`            | Allow `?key=` query auth                                   |
 | `PUBLIC_BASE_URL`         | `http://localhost` | Public base URL: Caddy site address + absolute URLs        |
 | `ICECAST_MAX_LISTENERS`   | `2`                | Per-mount listener cap (Icecast only)                      |
 | `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N min of zero listeners (polled every 60s) |
-| `ICECAST_SOURCE_PASSWORD` | —                  | Source auth (ffmpeg → Icecast)                             |
-| `ICECAST_ADMIN_PASSWORD`  | —                  | Admin API auth (internal polling)                          |
+| `ICECAST_SOURCE_PASSWORD` | `secret` (dev)     | Source auth (ffmpeg → Icecast)                             |
+| `ICECAST_ADMIN_PASSWORD`  | `admin` (dev)      | Admin API auth (internal polling; also used by /hc probe)  |
 | `PROXY_FILE`              | —                  | JSON array of proxy URLs → `config.proxyList`              |
 | `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink `--default-stream`                              |
 | `LOG_LEVEL`               | `info`             | pino log level                                             |
+| `HTTP_PORT`               | `80`               | Host port → Caddy HTTP                                     |
+| `HTTPS_PORT`              | `443`              | Host port → Caddy HTTPS                                    |
+| `HEALTH_PORT`             | `8080`             | Host port → health service                                 |
+
+Container-internal ports are **fixed, not configurable**: stream, icecast and health all listen on 8080 (per-container network namespaces — no conflict), Caddy's liveness route lives on 8089. Only host-published ports are env-configurable.
 
 ---
 
@@ -188,7 +227,7 @@ Every pipeline teardown declares its reason — `stream:stopped` carries one of 
 
 ### 5.1 Unit tests — `node:test`
 
-Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `mock.module` (run with `--experimental-test-module-mocks`), plus real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Tests mirror the `src/` tree under `test/`. Cover basic and non-obvious scenarios:
+Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `mock.module` (run with `--experimental-test-module-mocks`), plus real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Tests mirror each package's `src/` tree under `tests/` (workspaces: `stream`, `health`, `shared`). Cover basic and non-obvious scenarios:
 
 - **childProcess** — real spawn/kill (SIGTERM → SIGKILL fallback), replace, stderr in the exit payload, spawn errors.
 - **streamlink** — spawn args, proxy picking (random from config), error tail.
@@ -197,16 +236,19 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 - **stream** — sequential happy path, mountpoint readiness (polling, fail-fast on exit, timeout) inside the pipeline, failure propagation, replace, TTL, process-exit handling.
 - **auth** — header, query, missing/invalid key.
 - **routes** — status codes (400/401/429/500/302).
+- **serviceState** — health verdict derivation (idle / streaming / degraded).
+- **health checks** — each probe: ok / HTTP error / network exception, request shape; `/hc` + `/health` aggregation, `503` on any failure.
+- **shared Config** — defaults, env overrides, proxy-file filtering, immutability.
 - **utils/isValidYoutubeUrl** — SSRF cases.
 - **utils/getYoutubeMeta** — oEmbed fetch, non-2xx and network/parse failure → null.
 
 ### 5.2 Linting — `oxlint`
 
-- Add `oxlint` as the linter, run via `npm run lint`.
+- `oxlint` (`.oxlintrc.json`) and `oxfmt` (`.oxfmtrc.json`) are configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
 
 ### 5.3 CI (GitHub Actions)
 
-- Run **lint + tests** on every PR open/update.
+- Run **lint + format-check + tests** on every PR open/update.
 - **Dependency & secret scanning** — `npm audit`, `gitleaks`; CodeQL + Dependabot (see §3.5).
 - Block merge when failing (via branch protection).
 
@@ -246,9 +288,10 @@ Every module gets unit tests. Use `node:test` with built-in `mock.fn()` and `moc
 
 ```yaml
 services:
-  caddy: # public front door (80/443)
+  caddy: # public front door (HTTP_PORT/HTTPS_PORT → 80/443)
   stream: # internal (8080, no host port)
-  icecast: # internal (8000, no host port)
+  icecast: # internal (8080, no host port)
+  health: # health monitor (HEALTH_PORT → 8080, published)
 ```
 
 - Caddy: official `caddy:2-alpine` image (digest-pinned), static Caddyfile using env-var placeholders (`{$PUBLIC_BASE_URL}`).
@@ -257,6 +300,8 @@ services:
   `/start.sh` entrypoint is bypassed (sudo needs `CAP_SETUID`), and the compose command patches credentials and
   `max-listeners` into a tmpfs copy of the config (`/etc/icecast2` stays intact — `/usr/share/icecast2` web/admin files
   symlink into it).
+- Internal ports are fixed (§4.4): stream, icecast and health share 8080 via per-container namespaces; Caddy's static liveness route `:8089/hc` is internal-only.
+- `health`: same monorepo build context (`packages/`), consumes `yt-stream-shared`; same hardening posture (read-only rootfs, `cap_drop: ALL`, non-root, tmpfs `/tmp`); 0.25 CPU / 128M.
 - Logging: every service logs to stdout/stderr → `docker logs` (pino, Caddy, Icecast via `/dev/stderr`, access log off).
   `json-file` driver with rotation (10 MB × 3) on all services; `docker compose logs --timestamps` shows unified UTC stamps.
 
@@ -264,11 +309,12 @@ services:
 
 ## 8. Acceptance Criteria (production)
 
-1. Only `/api/*` and `/stream` are reachable publicly; everything else (including Icecast admin) returns 404 externally.
+1. Publicly reachable: `/api/*` and `/stream` via Caddy, plus the health monitor on `HEALTH_PORT`; everything else (including Icecast admin) returns 404 externally.
 2. `/api/stream?url=...` with a valid key starts a stream and `302`s to `/stream`.
-3. Missing/invalid key returns 401; query-param auth works only when explicitly enabled.
+3. Missing/invalid key returns 401; query-param auth works only when explicitly enabled. `/api/state` is the sole key-exempt `/api/*` route (§3.2).
 4. More than `ICECAST_MAX_LISTENERS` clients are rejected.
 5. HTTPS works via Caddy; HTTP-only mode is selectable by env.
 6. Every module has unit tests; lint + tests run in CI on each PR and block merge.
 7. A second stream start while one is in progress returns 429.
 8. No explicit state machine remains; start/stop are sequential `async/await`.
+9. The health monitor reports caddy/icecast/stream independently on `/hc`; any component failure yields `503` without taking the monitor itself down.
