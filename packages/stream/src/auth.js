@@ -52,12 +52,20 @@ function keysMatch(provided, expected) {
   return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
 }
 
-/** API key auth for every route registered on `app`. Must run before route registration. */
+const NON_PROTECTED_PATHS = ['/api/state'];
+/**
+ * Registers an authentication hook for the Fastify app that checks for a valid API key in the request.
+ *
+ * @param {import('fastify').FastifyInstance} app - The Fastify instance.
+ * @param {Object} options - The options object.
+ * @param {import('yt-stream-shared').Config} options.config - The configuration object containing the API key and query allowance.
+ */
 export function registerAuth(app, { config }) {
   app.addHook('onRequest', async (request, reply) => {
     const provided = extractApiKey(request, config.allowKeyInQuery);
+    const url = new URL(request.url, config.publicBaseUrl);
 
-    if (provided === null || !keysMatch(provided, config.apiKey)) {
+    if (!NON_PROTECTED_PATHS.includes(url.pathname) && (provided === null || !keysMatch(provided, config.apiKey))) {
       reply.code(401);
       return reply.send({ error: 'Missing or invalid API key' });
     }

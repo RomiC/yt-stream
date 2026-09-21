@@ -23,16 +23,18 @@ describe('Routes', () => {
       getStatus: async () => idleStatus(),
       streamUrl: 'https://yts.example.com/stream'
     };
-    const healthMonitor = {
+    const serviceState = {
       getStatus: async () => ({ ...idleStatus(), general: { ...idleStatus().general, health: 'ok' } })
     };
 
-    return { streamService, healthMonitor, ...overrides };
+    return { streamService, serviceState, ...overrides };
   }
 
   async function buildApp(deps = makeDeps()) {
     const app = Fastify({ logger: false });
+
     registerRoutes(app, deps);
+
     return app;
   }
 
@@ -134,7 +136,7 @@ describe('Routes', () => {
       const second = await app.inject({ method: 'DELETE', url: '/api/stream' });
       assert.equal(second.statusCode, 429);
 
-      release({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
+      release?.({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
       assert.equal((await first).statusCode, 200);
     });
 
@@ -163,36 +165,36 @@ describe('Routes', () => {
       const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
       assert.equal(res.statusCode, 429);
 
-      release();
+      release?.();
       await first;
     });
   });
-  describe('GET /api/health', () => {
-    test('GET /api/health returns 200 and the payload when healthy', async () => {
+  describe('GET /api/state', () => {
+    test('GET /api/state returns 200 and the payload when healthy', async () => {
       const deps = makeDeps();
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/state' });
 
       assert.equal(res.statusCode, 200);
       assert.equal(res.json().general.health, 'ok');
     });
 
-    test('GET /api/health returns 503 when the verdict is failure', async () => {
+    test('GET /api/state returns 503 when the verdict is failure', async () => {
       const deps = makeDeps();
-      deps.healthMonitor.getStatus = async () => ({
+      deps.serviceState.getStatus = async () => ({
         ...idleStatus(),
         general: { state: 'idle', url: null, health: 'failure' }
       });
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/state' });
 
       assert.equal(res.statusCode, 503);
       assert.equal(res.json().general.health, 'failure');
     });
 
-    test('GET /api/health passes through the full payload', async () => {
+    test('GET /api/state passes through the full payload', async () => {
       const payload = {
         streamlink: { status: 'running' },
         ffmpeg: { status: 'running' },
@@ -200,10 +202,10 @@ describe('Routes', () => {
         general: { state: 'streaming', url: VALID_URL, health: 'ok' }
       };
       const deps = makeDeps();
-      deps.healthMonitor.getStatus = async () => payload;
+      deps.serviceState.getStatus = async () => payload;
       const app = await buildApp(deps);
 
-      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/state' });
 
       assert.equal(res.statusCode, 200);
       assert.deepEqual(res.json(), payload);

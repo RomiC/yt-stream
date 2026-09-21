@@ -3,7 +3,7 @@ import { Config } from 'yt-stream-shared';
 import { registerAuth, logRedact } from './auth.js';
 import { EventBus, Event } from './events.js';
 import { Stream } from './stream.js';
-import { HealthMonitor } from './healthMonitor.js';
+import { ServiceState } from './serviceState.js';
 import { registerRoutes } from './routes.js';
 
 const config = new Config();
@@ -29,9 +29,9 @@ if (config.apiKey === 'dev-api-key') {
   app.log.warn('Using default API key — set API_KEY in production');
 }
 
-const healthMonitor = new HealthMonitor({ streamService });
+const serviceState = new ServiceState({ streamService });
 
 registerAuth(app, { config });
-registerRoutes(app, { streamService, healthMonitor });
+registerRoutes(app, { streamService, serviceState });
 
 await app.listen({ port: config.stream.port, host: '0.0.0.0' });

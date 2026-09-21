@@ -1,8 +1,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HealthMonitor } from '../src/healthMonitor.js';
+import { ServiceState } from '../src/serviceState.js';
 
-describe('HealthMonitor', () => {
+describe('ServiceState', () => {
   function snapshot(overrides = {}) {
     return {
       streamlink: { status: 'stopped' },
@@ -14,7 +14,7 @@ describe('HealthMonitor', () => {
   }
 
   function makeMonitor(streamService = { getStatus: async () => snapshot() }) {
-    return new HealthMonitor({ streamService });
+    return new ServiceState({ streamService });
   }
 
   test('ok when Icecast is available and no stream is running', async () => {

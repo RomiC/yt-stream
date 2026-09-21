@@ -1,15 +1,23 @@
 import { isValidYoutubeUrl } from './utils/isValidYoutubeUrl.js';
 
-export function registerRoutes(app, { streamService, healthMonitor }) {
-  // Single-flight: at most one start/stop operation at a time.
+/**
+ * Registers the routes for the stream service.
+ *
+ * @param {import('fastify').FastifyInstance} app - The Fastify instance.
+ * @param {Object} options - The options object.
+ * @param {import('./stream.js').Stream} options.streamService - The stream service instance.
+ * @param {import('./serviceState.js').ServiceState} options.serviceState - The service state instance.
+ */
+export function registerRoutes(app, options) {
+  const { streamService, serviceState } = options;
   let requestInProgress = false;
 
-  // --- GET /api/health -------------------------------------------------------
+  // --- GET /api/state -------------------------------------------------------
 
-  app.get('/api/health', async (request, reply) => {
-    const health = await healthMonitor.getStatus();
-    reply.code(health.general.health === 'ok' ? 200 : 503);
-    return health;
+  app.get('/api/state', async (_, reply) => {
+    const state = await serviceState.getStatus();
+    reply.code(state.general.health === 'ok' ? 200 : 503);
+    return state;
   });
 
   // --- GET /api/stream -------------------------------------------------------

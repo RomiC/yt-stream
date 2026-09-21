@@ -7,7 +7,7 @@ import { registerRoutes } from '../src/routes.js';
 const KEY = 'test-api-key';
 
 function makeConfig(overrides = {}) {
-  return { apiKey: KEY, allowKeyInQuery: false, ...overrides };
+  return { apiKey: KEY, allowKeyInQuery: false, publicBaseUrl: 'http://localhost', ...overrides };
 }
 
 async function buildApp(config = makeConfig()) {
@@ -116,10 +116,10 @@ describe('Auth', () => {
           general: { state: 'idle', url: null }
         })
       };
-      const healthMonitor = {
+      const serviceState = {
         getStatus: async () => ({ general: { health: 'ok', state: 'idle', url: null } })
       };
-      return { streamService, healthMonitor };
+      return { streamService, serviceState };
     }
 
     async function buildFullApp(config = makeConfig()) {
@@ -128,20 +128,6 @@ describe('Auth', () => {
       registerRoutes(app, makeDeps());
       return app;
     }
-
-    test('GET /api/health requires auth', async () => {
-      const app = await buildFullApp();
-
-      const noKey = await app.inject({ method: 'GET', url: '/api/health' });
-      assert.equal(noKey.statusCode, 401);
-
-      const withKey = await app.inject({
-        method: 'GET',
-        url: '/api/health',
-        headers: { authorization: `Bearer ${KEY}` }
-      });
-      assert.equal(withKey.statusCode, 200);
-    });
 
     test('GET /api/stream requires auth before url validation', async () => {
       const app = await buildFullApp();
@@ -155,6 +141,13 @@ describe('Auth', () => {
       const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
 
       assert.equal(res.statusCode, 401);
+    });
+
+    test('GET /api/state does NOT require auth', async () => {
+      const app = await buildFullApp();
+      const res = await app.inject({ method: 'GET', url: '/api/state' });
+
+      assert.equal(res.statusCode, 200);
     });
   });
 

@@ -1,8 +1,7 @@
 /**
- * The /health facade: takes the stream service's status snapshot and adds
- * the overall verdict ('ok' / 'failure').
+ * Returns stream service state
  */
-export class HealthMonitor {
+export class ServiceState {
   #streamService;
 
   constructor({ streamService }) {
