@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { Config } from './config.js';
+import { Config } from 'yt-stream-shared';
 import { registerAuth, logRedact } from './auth.js';
 import { EventBus, Event } from './events.js';
 import { Stream } from './stream.js';
@@ -34,4 +34,4 @@ const healthMonitor = new HealthMonitor({ streamService });
 registerAuth(app, { config });
 registerRoutes(app, { streamService, healthMonitor });
 
-await app.listen({ port: config.port, host: '0.0.0.0' });
+await app.listen({ port: config.stream.port, host: '0.0.0.0' });

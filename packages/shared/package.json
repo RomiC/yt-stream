@@ -1,0 +1,26 @@
+{
+  "name": "yt-stream-shared",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Shared parts of YouTube stream service",
+  "homepage": "https://github.com/RomiC/yt-stream#readme",
+  "bugs": {
+    "url": "https://github.com/RomiC/yt-stream/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RomiC/yt-stream.git"
+  },
+  "license": "MIT",
+  "author": "Roman Charugin <romic+github@fastmail.com>",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/index.test.js tests/**/*.test.js",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check"
+  },
+  "devDependencies": {}
+}

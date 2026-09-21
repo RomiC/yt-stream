@@ -75,9 +75,12 @@ services:
 
   stream:
     build:
-      context: ./packages/stream/
-      dockerfile: ./Dockerfile
-    image: yt-stream:latest
+      context: ./
+      dockerfile: packages/Dockerfile.node
+      args:
+        SERVICE: stream
+        APK_PACKAGES: "ffmpeg=8.1.2-r0 streamlink=8.4.0-r0"
+    image: yt-stream-stream:latest
     volumes:
       - stream-data:/app/data
       - ./proxy.json:/app/proxy.json:ro

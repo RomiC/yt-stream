@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Config } from '../src/config.js';
+import { Config } from '../../lib/config.js';
 
 describe('Config', () => {
   const tempDir = mkdtempSync(join(tmpdir(), 'yt-stream-config-'));
@@ -17,9 +17,15 @@ describe('Config', () => {
 
   test('applies defaults when env is empty', () => {
     const config = new Config({});
-    assert.equal(config.port, 8080);
+
+    assert.equal(config.health.host, 'health');
+    assert.equal(config.health.port, 8080);
+    assert.equal(config.caddyHealth.host, 'caddy');
+    assert.equal(config.caddyHealth.port, 8089);
+    assert.equal(config.stream.host, 'stream');
+    assert.equal(config.stream.port, 8080);
     assert.equal(config.icecast.host, 'icecast');
-    assert.equal(config.icecast.port, 8000);
+    assert.equal(config.icecast.port, 8080);
     assert.equal(config.icecast.sourcePassword, 'secret');
     assert.equal(config.icecast.adminPassword, 'admin');
     assert.equal(config.publicBaseUrl, 'http://localhost');
@@ -34,8 +40,6 @@ describe('Config', () => {
   test('parses env overrides', () => {
     const proxyFile = writeProxyFile('proxies.json', ['http://user:pass@1.2.3.4:8883']);
     const config = new Config({
-      PORT: '9000',
-      ICECAST_HOST: 'ic.example',
       ICECAST_SOURCE_PASSWORD: 'icecast-source-password',
       ICECAST_ADMIN_PASSWORD: 'icecast-admin-password',
       PUBLIC_BASE_URL: 'https://yts.example.com:3001',
@@ -47,8 +51,13 @@ describe('Config', () => {
       ALLOW_KEY_IN_QUERY: 'true'
     });
 
-    assert.equal(config.port, 9000);
-    assert.equal(config.icecast.host, 'ic.example');
+    // Caddy health, stream and icecast hosts and ports are hardcoded
+    assert.equal(config.caddyHealth.host, 'caddy');
+    assert.equal(config.caddyHealth.port, 8089);
+    assert.equal(config.stream.host, 'stream');
+    assert.equal(config.stream.port, 8080);
+    assert.equal(config.icecast.host, 'icecast');
+    assert.equal(config.icecast.port, 8080);
     assert.equal(config.icecast.sourcePassword, 'icecast-source-password');
     assert.equal(config.icecast.adminPassword, 'icecast-admin-password');
     assert.equal(config.publicBaseUrl, 'https://yts.example.com:3001');
@@ -85,20 +94,20 @@ describe('Config', () => {
 
   test('falls back to defaults when numeric env vars are not parseable', () => {
     const config = new Config({
-      PORT: 'not-a-port',
       STREAM_TTL_MINUTES: 'lots'
     });
 
-    assert.equal(config.port, 8080);
     assert.equal(config.streamTtlMinutes, 15);
   });
 
   test('config is immutable', () => {
     const config = new Config({});
     assert.throws(() => {
-      config.port = 1;
+      // @ts-ignore
+      config.stream.port = 1;
     }, TypeError);
     assert.throws(() => {
+      // @ts-ignore
       config.icecast.host = 'x';
     }, TypeError);
   });

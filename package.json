@@ -3,14 +3,24 @@
   "private": true,
   "scripts": {
     "test": "npm run test --workspaces",
+    "test:health": "npm run test --workspace=packages/health",
+    "test:shared": "npm run test --workspace=packages/shared",
     "test:stream": "npm run test --workspace=packages/stream",
     "lint": "npm run lint --workspaces",
+    "lint:health": "npm run lint --workspace=packages/health",
+    "lint:shared": "npm run lint --workspace=packages/shared",
     "lint:stream": "npm run lint --workspace=packages/stream",
     "lint:fix": "npm run lint:fix --workspaces",
+    "lint:fix:health": "npm run lint:fix --workspace=packages/health",
+    "lint:fix:shared": "npm run lint:fix --workspace=packages/shared",
     "lint:fix:stream": "npm run lint:fix --workspace=packages/stream",
     "format": "npm run format --workspaces",
+    "format:health": "npm run format --workspace=packages/health",
+    "format:shared": "npm run format --workspace=packages/shared",
     "format:stream": "npm run format --workspace=packages/stream",
     "format:check": "npm run format:check --workspaces",
+    "format:check:health": "npm run format:check --workspace=packages/health",
+    "format:check:shared": "npm run format:check --workspace=packages/shared",
     "format:check:stream": "npm run format:check --workspace=packages/stream"
   },
   "homepage": "https://github.com/RomiC/yt-stream#readme",
@@ -27,7 +37,9 @@
     "doc": "docs"
   },
   "workspaces": [
-    "packages/stream"
+    "packages/stream",
+    "packages/health",
+    "packages/shared"
   ],
   "dependencies": {
     "fastify": "5.12.1"

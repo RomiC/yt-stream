@@ -19,7 +19,9 @@ function isValidProxyUrl(proxy) {
  * process.env; tests pass a synthetic env object.
  */
 export class Config {
-  #port;
+  #health;
+  #caddyHealth;
+  #stream;
   #icecast;
   #publicBaseUrl;
   #logLevel;
@@ -30,10 +32,21 @@ export class Config {
   #allowKeyInQuery;
 
   constructor(env = process.env) {
-    this.#port = parseIntEnv(env.PORT, 8080);
+    this.#health = Object.freeze({
+      host: 'health',
+      port: 8080
+    });
+    this.#caddyHealth = Object.freeze({
+      host: 'caddy',
+      port: 8089
+    });
+    this.#stream = Object.freeze({
+      host: 'stream',
+      port: 8080
+    });
     this.#icecast = Object.freeze({
-      host: env.ICECAST_HOST || 'icecast',
-      port: 8000, // internal container port — never changes
+      host: 'icecast',
+      port: 8080,
       sourcePassword: env.ICECAST_SOURCE_PASSWORD || 'secret',
       adminPassword: env.ICECAST_ADMIN_PASSWORD || 'admin'
     });
@@ -56,8 +69,10 @@ export class Config {
     if (!proxyFile) {
       return [];
     }
+
     try {
       const parsed = JSON.parse(readFileSync(proxyFile, 'utf-8'));
+
       return Array.isArray(parsed)
         ? parsed.filter((proxy) => typeof proxy === 'string' && proxy.trim() !== '' && isValidProxyUrl(proxy))
         : [];
@@ -66,8 +81,16 @@ export class Config {
     }
   }
 
-  get port() {
-    return this.#port;
+  get health() {
+    return this.#health;
+  }
+
+  get caddyHealth() {
+    return this.#caddyHealth;
+  }
+
+  get stream() {
+    return this.#stream;
   }
 
   get icecast() {
