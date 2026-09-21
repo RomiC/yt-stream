@@ -430,7 +430,6 @@ services:
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
       ICECAST_PORT: "${ICECAST_PORT:-8871}" # public port for redirect URLs only
       PUBLIC_HOSTNAME: "${PUBLIC_HOSTNAME:-localhost}"
-      DATA_DIR: /app/data
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
       PROXY_FILE: "${PROXY_FILE:-}"
