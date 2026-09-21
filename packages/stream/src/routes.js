@@ -21,7 +21,7 @@ export function registerRoutes(app, options) {
   });
 
   // --- GET /api/stream -------------------------------------------------------
-  // Status is served by /api/health; this route only starts a stream.
+  // Status is served by /api/state; this route only starts a stream.
 
   app.get('/api/stream', async (request, reply) => {
     const { url } = request.query;
