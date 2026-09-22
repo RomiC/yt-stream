@@ -59,9 +59,19 @@ export class Config {
     this.#allowKeyInQuery = env.ALLOW_KEY_IN_QUERY === 'true';
   }
 
-  /** Strips a trailing slash so callers can append paths directly. */
+  /**
+   * Strips a trailing slash so callers can append paths directly.
+   * @param {string} value - URL to normalize
+   * @returns {string} Normalized URL w/o ending /
+   */
   #normalizeBaseUrl(value) {
-    return value.replace(/\/+$/, '');
+    let normalizedUrl = value;
+
+    while (normalizedUrl.endsWith('/')) {
+      normalizedUrl = normalizedUrl.slice(0, -1);
+    }
+
+    return normalizedUrl;
   }
 
   /** Reads the PROXY_FILE (a JSON array of proxy URL strings) once at startup. */
