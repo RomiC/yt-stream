@@ -1,210 +1,286 @@
-# YouTube → Radio Stream Service — Design (PoC)
+# yt-stream — Design
 
-> **Status: superseded.** The production refactor replaced this architecture (module decomposition, event bus, no state machine) — see [`docs/PRD-6-7.md`](docs/PRD-6-7.md) for the current design.
+A self-hosted service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. A single `GET /api/stream?url=…` request starts the pipeline and redirects to the audio mountpoint. Exactly **one stream** runs at a time; starting a new URL replaces the current one.
 
-## Overview
+### Guiding principles
 
-A self-hosted Node.js service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. The user makes a single `GET` request with a YouTube URL and is redirected to an Icecast mountpoint playable by any radio receiver.
-
-The PoC manages exactly **one stream at a time** — starting a new YouTube URL replaces the current one.
-
-```
-GET /stream?url=https://youtube.com/watch?v=...
-       │
-       ▼
-  ┌───────────────────────────────────────────────────────┐
-  │                    STREAM SERVICE (Node.js)           │
-  │                                                       │
-  │  ┌──────────┐    ┌───────────────┐    ┌────────────┐  │
-  │  │ REST API │───▶│ Stream Manager│───▶│ streamlink │  │
-  │  │(Fastify) │    │ (lifecycle)   │    │ ffmpeg     │  │
-  │  └────┬─────┘    └───────────────┘    └─────┬──────┘  │
-  │       │                                     │         │
-  │       │  302 redirect                       ▼         │
-  │       └──────────────────────────▶┌───────────────┐   │
-  │                                   │    Icecast    │   │
-  │                                   │   /stream     │   │
-  │                                   │  audio/mpeg   │   │
-  │                                   └───────────────┘   │
-  └───────────────────────────────────────────────────────┘
-       │
-       ▼
-  Plays on any radio receiver, VLC, hardware tuner, browser, etc.
-```
+- **Single entry point** — the application is reachable only through Caddy (one public URL); the health monitor is the single deliberate exception, published on its own port.
+- **Convenience preserved** — a client can start and tune into a stream with a single `GET` request.
+- **Minimal dependencies** — Node built-ins where possible; only battle-tested external components (Fastify, streamlink, ffmpeg, Icecast, Caddy).
+- **Fail loud** — a failed start fails the HTTP request; no hidden retry loops.
 
 ---
 
-## Components
+## 1. Architecture
 
-### 1. REST API
-
-Thin HTTP layer (Fastify).
-
-**Route isolation** — only the four routes listed below are registered. No Icecast admin endpoints, mountpoints, or internal URLs are exposed through the API server. The Icecast port (8000) serves audio directly; the API server (8080) serves only the management interface.
-
-| Method   | Path              | Params / Body                 | Response                                                                                     |
-| -------- | ----------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `GET`    | `/stream?url=...` | `url` (query param, required) | `302` redirect to Icecast mountpoint on success; `500` if pipeline fails to start within 15s |
-| `GET`    | `/stream`         | —                             | `200` — current stream status JSON (`idle` if nothing running)                               |
-| `DELETE` | `/stream`         | —                             | `200` — stream stopped; `404` — no stream was running                                        |
-| `GET`    | `/health`         | —                             | `200` — component statuses (ffmpeg, Icecast); `503` if degraded                              |
-
-**Key behaviours:**
-
-- **Single stream** — requesting a different URL kills the current pipeline (even if still starting) and begins a new one. No multi-stream support in PoC.
-- **Synchronous** — `GET /stream?url=...` blocks until ffmpeg connects to Icecast (up to 15s timeout), then redirects. On failure, returns `500` immediately.
-- **Idempotent** — requesting the same URL while streaming or starting returns `302` immediately without restarting the pipeline.
-- **202 Accepted** while streamlink is opening the stream and ffmpeg is connecting; **302 Found** once audio is flowing to Icecast.
-- **No authentication** — intended for trusted-network use in PoC.
-
-### 2. Stream Manager
-
-Manages the single stream's full lifecycle.
-
-**State machine:**
+Four containers on one Docker network, plus a shared build context:
 
 ```
-                 ┌──────────┐
-    GET /stream  │   IDLE   │
-     w/ url ────▶│          │
-                 └─────┬────┘
-                       │
-                       ▼
-                 ┌──────────┐
-                 │ STARTING │  streamlink opening, ffmpeg connecting
-                 └────┬─────┘
-                      │
-              ┌───────┴────────┐
-              ▼                ▼
-        ┌──────────┐    ┌──────────┐
-        │STREAMING │    │ STOPPED  │  streamlink/ffmpeg failure or 15s timeout
-        └────┬─────┘    └──────────┘
-             │               ▲
-    DELETE   │               │
-    /stream  │  0 listeners  │
-       │     │  > TTL        │
-       ▼     ▼               │
-        ┌──────────┐         │
-        │ STOPPED  │◀────────┘
-        └──────────┘
-         manual DELETE, TTL expiry, or pipeline failure
+            ┌──────────── host ────────────┐
+ HTTP/HTTPS │  caddy :80/:443  (front door)│──── /api/* ──▶ stream :8080 (internal)
+ HEALTH_PORT│                              │──── /stream ▶ icecast :8080 (internal)
+            │  health :8080 (published)    │
+            └──────────────────────────────┘
+             caddy liveness :8089 (internal only)
 ```
 
-**Per-stream lifecycle:**
+- **caddy** — reverse proxy, the only public door. Automatic HTTPS (Let's Encrypt) when `PUBLIC_BASE_URL` is `https://…`; HTTP-only mode for local dev. Also exposes a static liveness route on an internal-only port.
+- **stream** — Node.js application: URL validation, the `streamlink → ffmpeg` pipeline, Icecast admin polling, TTL auto-stop, metadata push. Internal port only.
+- **icecast** — off-the-shelf streaming server (`moul/icecast`, digest-pinned). Single fixed mountpoint `/stream`; serves audio to listeners and an admin API to the internal network.
+- **health** — independent failure domain (#18). Probes the three components from the outside over plain HTTP and aggregates the result.
 
-1. **Fetch & stream** — `streamlink` opens the YouTube live stream (its own HLS client, optionally through a proxy) and writes raw media to stdout.
-2. **Transcode & stream** — `ffmpeg` reads streamlink's output from stdin, transcodes to MP3 (libmp3lame) at 128 kbps, and pushes to Icecast via the `icecast://` protocol. ffmpeg never touches YouTube directly.
-3. **Health monitoring** — watches the pipeline (streamlink + ffmpeg); if either exits unexpectedly, transitions to `STOPPED`. Send another `GET /stream?url=...` to restart.
-4. **Listener polling** — periodically queries Icecast's `/admin/listmounts` XML API to count listeners and verify the mountpoint is active (15s interval). When `listeners == 0` for `STREAM_TTL_MINUTES` (default 15 min), the pipeline is torn down and the state transitions to `STOPPED`.
-5. **Metadata** — after the mountpoint becomes active, fetches the stream's title/author via YouTube oEmbed and pushes `<author> - <title>` to Icecast's `/admin/metadata` `updinfo` endpoint so clients display the live title. Best-effort: unavailable metadata never fails the stream.
+### Package layout (npm workspaces)
 
-**Pipeline command:**
+```
+packages/
+├── shared/                     # yt-stream-shared — env Config shared by all services
+│   ├── lib/config.js           #   immutable env config (constructor takes an env object)
+│   └── index.js                #   public exports
+├── stream/src/
+│   ├── events.js               # event bus + exported Event map (stream:* notifications)
+│   ├── childProcess.js         # base class: process lifecycle, kill, stderr in the exit payload
+│   ├── streamlink.js           # streamlink process: fetch the stream
+│   ├── ffmpeg.js               # ffmpeg process: transcode stdin → Icecast output URL
+│   ├── icecast.js              # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
+│   ├── serviceState.js         # /api/state facade: status snapshot + ok/failure verdict
+│   ├── stream.js               # orchestration: StreamPipeline (per-generation) + live-pipelines map
+│   ├── ttlWatcher.js           # zero-listener TTL: polls Icecast, notifies owner via onExpired
+│   ├── auth.js                 # API key validation (Fastify hook; exempts /api/state)
+│   ├── routes.js               # HTTP handlers
+│   ├── utils/
+│   │   ├── isValidYoutubeUrl.js  # SSRF-guard URL validation
+│   │   └── getYoutubeMeta.js     # YouTube oEmbed metadata
+│   └── index.js                # bootstrap
+├── health/src/
+│   ├── check.js                # base class: timed check envelope (result / duration / error)
+│   ├── streamCheck.js          # GET stream:8080/api/state
+│   ├── icecastCheck.js         # GET icecast:8080/admin/stats (basic auth)
+│   ├── caddyCheck.js           # GET caddy:8089/hc — Caddy's own liveness route
+│   ├── config.js               # check constants (timeout, rate limit)
+│   ├── app.js                  # Fastify app factory (rate limiter registered before routes)
+│   ├── routes.js               # /hc + /health aggregation
+│   └── index.js                # bootstrap
+├── caddy/Caddyfile
+├── icecast/icecast.xml
+└── Dockerfile.node             # shared build for stream & health (SERVICE build arg)
+```
+
+Tests mirror each package's `src/` tree under `tests/`.
+
+---
+
+## 2. Network & port model
+
+- **Caddy** is the application's entry point (host ports `HTTP_PORT`/`HTTPS_PORT`, default 80/443).
+- The **health** monitor is published separately on `HEALTH_PORT` (default 8080) — the only other exposed surface, by decision.
+- `stream` and `icecast` bind **only** on the internal Docker network — no published host ports.
+
+Container-internal ports are **fixed, not configurable**: stream, icecast and health all listen on 8080 (per-container network namespaces — no conflict); Caddy's liveness route lives on 8089. Only host-published ports are env-configurable.
+
+### Caddy routing
+
+```
+{$PUBLIC_BASE_URL} {
+	handle /api/* {
+		reverse_proxy stream:8080
+	}
+	handle /stream {
+		reverse_proxy icecast:8080
+	}
+	handle {
+		respond 404
+	}
+}
+
+:8089 {
+	handle /hc {
+		respond 200
+	}
+}
+```
+
+> All routes must be `handle` blocks — mixing path-matched `reverse_proxy` with a bare
+> `handle { respond 404 }` lets Caddy's directive ordering put the catch-all first.
+
+Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/admin/*`, `/status.xsl`, and `/` are unreachable from outside the Docker network.
+
+---
+
+## 3. Public API & authentication
+
+| Method   | Path                                     | Auth | Purpose                                       |
+| -------- | ---------------------------------------- | ---- | --------------------------------------------- |
+| `GET`    | `/api/stream?url=…`                      | ✅   | Start a stream; `302` redirect to audio mount |
+| `DELETE` | `/api/stream`                            | ✅   | Stop the current stream                       |
+| `GET`    | `/api/state`                             | —    | Service state + health verdict (JSON)         |
+| `GET`    | `/stream`                                | —    | Audio mount (Icecast, public)                 |
+| `GET`    | `/hc` (alias `/health`) on `HEALTH_PORT` | —    | Aggregated component health                   |
+
+### 3.1 Authentication
+
+- `API_KEY` env var (dev fallback `dev-api-key` with a startup warning).
+- **Dual mode:** `Authorization: Bearer <key>` header, or `?key=<key>` query param enabled only when `ALLOW_KEY_IN_QUERY=true` (query keys can leak into Caddy's error log and browser history — keep it off).
+- Comparison is constant-time (`timingSafeEqual`). Pino redaction scrubs the `key` param from logged URLs — the redactor matches the *decoded* param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
+- Applies to all `/api/*` endpoints **except `/api/state`** — see the decision log.
+- The `/stream` audio mount is **not** key-protected: radio receivers cannot send headers.
+
+### 3.2 Start flow & concurrency
+
+```
+GET /api/stream?url=https://youtube.com/watch?v=...
+  → 302 Location: /stream            (audio mount, no key needed)
+  → 400 missing/invalid url
+  → 401 missing/invalid key
+  → 429 a stream operation is already in progress
+  → 500 extraction/transcode/icecast failure
+```
+
+One in-flight operation at a time: the route holds a `requestInProgress` flag; concurrent start/delete requests are dropped with `429`. `GET /api/stream` without a `url` returns `400` — the endpoint is start-only; status is served by `/api/state`. Requesting the **same URL** while it is already streaming is idempotent — an immediate `302` without restarting the pipeline.
+
+---
+
+## 4. Stream lifecycle
+
+### 4.1 No state machine
+
+There is no explicit state machine. Each generation is a `StreamPipeline` that owns its own streamlink/ffmpeg processes, the TTL watcher, and the Icecast client. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#current` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus Icecast mount readiness:
+
+- `starting` — processes alive, mount not yet active
+- `streaming` — processes alive, mount active
+- `stopped` — either process dead
+
+### 4.2 Start sequence
+
+`start(url)` runs strictly sequentially with `async/await`:
+
+1. If the same URL is already streaming — return immediately (idempotent).
+2. Stop any existing pipeline (kill streamlink + ffmpeg, await exit; the old stream ends with reason `replaced` **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for).
+3. `prepareMountPoint()` — Icecast reachable and the mount free (old source released).
+4. streamlink picks a proxy itself — a random entry from `config.proxyList` (direct when the list is empty).
+5. Spawn streamlink + ffmpeg, pipe them, then wait for the Icecast mount to become active (30 s budget, 500 ms poll interval) — proof the pipeline works end-to-end.
+6. Fail fast when a process exits before the mount is active (attributed with its exit code/signal and stderr tail); a timeout also fails the request. Any step throwing maps to `500` — **no retries**.
+7. On success: start the TTL watcher, fetch YouTube oEmbed metadata and push `<author> - <title>` to Icecast (best-effort — unavailable metadata never fails the stream), emit `stream:started`.
+
+A failed start tears the failed pipeline down and emits `stream:error` (it never emitted `stream:started`).
+
+### 4.3 Failure semantics & auto-stop
+
+- **Unexpected process exit** (streamlink or ffmpeg dies) → the pipeline is stopped with reason `process-exit`; the signal in the exit payload makes external kills (OOM, `docker kill`) self-explaining.
+- **Zero-listener TTL** — the TTL watcher polls Icecast every 60 s; `STREAM_TTL_MINUTES` (default 15) of zero listeners tears the pipeline down (reason `ttl`).
+- A stream that lost its source (mount gone) is reaped by the same TTL watcher (no listeners → TTL). An **unreachable Icecast** counts as zero listeners — admin, source and listeners share port 8080, so nobody can be listening — which also reaps a black-holed pipeline where ffmpeg blocks silently without exiting.
+- **Manual stop** (`DELETE /api/stream`) → reason `manual`.
+
+---
+
+## 5. Event bus
+
+A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.js` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent).
+
+| Event            | Emitted by | Consumed by | Payload                                                      |
+| ---------------- | ---------- | ----------- | ------------------------------------------------------------ |
+| `stream:started` | stream     | logging     | `{ url }`                                                    |
+| `stream:stopped` | stream     | logging     | `{ url, reason: manual \| replaced \| process-exit \| ttl }` |
+| `stream:error`   | stream     | logging     | `{ url, error }`                                             |
+
+Every pipeline teardown declares its reason. Operational logging is centralized in `Stream` — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging.
+
+---
+
+## 6. Health monitoring (#18)
+
+A dedicated `health` container is an independent failure domain: it probes the components from the outside over plain HTTP and aggregates the result. It is the only service besides Caddy with a published host port.
+
+- **Probes** (2 s timeout each, run concurrently):
+  - `stream` → `GET stream:8080/api/state`
+  - `icecast` → `GET icecast:8080/admin/stats` (basic auth, admin password)
+  - `caddy` → `GET caddy:8089/hc` (Caddy's own static liveness route, internal-only)
+- **Response:** `{ caddy, icecast, stream }`, each `{ result: 'ok' | 'error', duration, error? }`. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
+- A failing **or hanging** component never takes the monitor down: every probe wraps in try/catch with its own timeout.
+- **Rate limited** — 60 requests/minute per client (`429` beyond); the limiter is registered before the routes so both `/hc` and `/health` are covered.
+- **Unauthenticated by decision** — external probers cannot send auth headers. The endpoint exposes component status only, no control surface.
+- Host-resource checks (disk/memory) were considered and **descoped**: the monitor observes service components, not the machine.
+
+---
+
+## 7. Security design
+
+### 7.1 API authentication & key exemption
+
+See §3.1. **Decision — `/api/state` is key-exempt:** the health monitor and plain status probers cannot attach auth headers. The endpoint is read-only status (no control) and is also reachable publicly through Caddy's `/api/*` routing. Accepted exposure: stream state, listener count, component statuses. Revisit if the payload grows more sensitive.
+
+### 7.2 SSRF guard
+
+Strict YouTube URL validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu.be` hosts, HTTP(S) schemes only; rejects IPs, `@` userinfo tricks, and non-standard ports.
+
+### 7.3 Listener limit
+
+`ICECAST_MAX_LISTENERS` (default 2) is enforced by Icecast alone (`<max-listeners>` per mount — excess clients rejected at connect time). The cap is injected into the Icecast config by its container's start command and never reaches the application.
+
+### 7.4 Secrets hygiene
+
+The API key is never logged (constant-time compare + pino redaction, see §3.1). Default credentials (`dev-api-key`, `secret`/`admin`) log startup warnings. Icecast passwords are patched into a tmpfs config copy at container start — the bind-mounted `icecast.xml` stays credential-free.
+
+### 7.5 Container hardening
+
+Every application container: non-root user, read-only root filesystem (tmpfs `/tmp` for scratch), `cap_drop: ALL`, `no-new-privileges: true`, resource limits (CPU/memory), log rotation (json-file, 10 MB × 3). Icecast runs as the image's own `icecast2` user (101:102): the root+sudo `/start.sh` entrypoint is bypassed (sudo needs `CAP_SETUID`), and the compose command patches credentials and `max-listeners` into a tmpfs copy of the config (`/etc/icecast2` stays intact — `/usr/share/icecast2` web/admin files symlink into it).
+
+### 7.6 CI scanning
+
+`npm audit` (gates on `critical`), gitleaks, GitHub **CodeQL** (default setup) for static analysis, **Dependabot** security updates for app-dependency CVEs, Dependabot version updates for npm and GitHub Actions.
+
+> **Decision — container-image Trivy scanning was dropped:** its advisory DB re-rates CVEs over time (revisions can flip findings between CRITICAL and HIGH), making a severity gate non-deterministic. CodeQL + Dependabot give reproducible code & app-dependency coverage instead. Docker ecosystem updates are deferred until E2E tests exist to validate a base-image bump.
+
+Branch protection on `main` requires PR + passing CI.
+
+---
+
+## 8. Dependency pinning policy
+
+All dependencies — npm packages, Docker base images, Docker service images, and system packages — are pinned to exact versions for reproducible builds. Without pinning, a rebuild months later can pull a newer dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
+
+| Layer                    | What                             | How                                                                                                     | Update cadence               |
+| ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| **npm**                  | `fastify`                        | Exact version in `package.json` (no `^`/`~`); `package-lock.json` records resolved URL + integrity hash | Dependabot (npm ecosystem)   |
+| **Docker base image**    | `node:24-alpine`                 | Pinned by digest in `Dockerfile.node`                                                                   | When bumping Node or Alpine  |
+| **Docker service image** | `moul/icecast`, `caddy:2-alpine` | Pinned by digest in `docker-compose.yml`                                                                | When bumping Icecast / Caddy |
+| **apk packages**         | `ffmpeg`, `streamlink`           | Exact version via compose build args                                                                    | When bumping any package     |
+
+Resolving digests and versions:
 
 ```bash
-streamlink --http-proxy <proxy> --default-stream audio_only,worst -o - \
-  https://youtube.com/watch?v=VIDEO_ID \
-  | ffmpeg -i - -c:a libmp3lame -b:a 128k -content_type audio/mpeg \
-    -f mp3 icecast://source:${ICECAST_SOURCE_PASSWORD}@icecast:8000/stream
-```
-
-### 3. Icecast Server
-
-Industry-standard streaming server (off-the-shelf, no custom code).
-
-- **Single fixed mountpoint** — `/stream`. No dynamic mountpoint creation.
-- **ICY protocol** — injects `icy-name`, `icy-genre`, `icy-br` headers so radio receivers display metadata correctly.
-- **Dynamic metadata** — accepts `GET /admin/metadata?...&mode=updinfo&song=<title>` updates so the live title/author is shown; set by the stream service after start.
-- **Admin API** — `GET /admin/listmounts` returns listener count and mountpoint status (polled by the Stream Manager every 15s).
-- **Configuration** — minimal; source password, admin password, hostname, and bind port.
-
----
-
-## Data Model
-
-No persistent state. Streams start fresh on each request and on service restart. The only state is in-memory: current YouTube URL, stream state, listener count.
-
----
-
-## YouTube-Specific Handling
-
-| Concern                         | Approach                                                                               |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| **Live & VOD**                  | streamlink handles both uniformly — same pipeline, no branching                        |
-| **Best audio**                  | `--default-stream audio_only,worst` (audio-only when available, else 144p)             |
-| **Format conversion**           | YouTube serves Opus/MP4-AAC; ffmpeg transcodes to MP3                                  |
-| **Geo-restrictions / bot-wall** | Optional rotating proxy list (`proxy.json`) passed to streamlink `--http-proxy`        |
-| **Rate limiting**               | streamlink's HLS client keeps up with YouTube's 30s live window (bare ffmpeg couldn't) |
-| **Cookies (logged-in)**         | Not used — proxy list replaces cookie authentication                                   |
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable                  | Default            | Description                                                                                                                                  |
-| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                    | `8080`             | API server listen port                                                                                                                       |
-| `ICECAST_HOST`            | `icecast`          | Icecast server hostname (Docker service name by default)                                                                                     |
-| `ICECAST_PORT`            | `8000`             | Public facing port for redirect URLs (internal always 8000)                                                                                  |
-| `ICECAST_SOURCE_PASSWORD` | `secret`           | Source password for ffmpeg → Icecast                                                                                                         |
-| `ICECAST_ADMIN_PASSWORD`  | `admin`            | Admin password for polling Icecast API                                                                                                       |
-| `PUBLIC_HOSTNAME`         | `localhost`        | Public hostname used in `302` redirect URLs                                                                                                  |
-| `LOG_LEVEL`               | `info`             | Logging level: `debug`, `info`, `warn`, `error`                                                                                              |
-| `PROXY_FILE`              | _(none)_           | Path to a user-provided proxy list (JSON array of proxy URL strings); only read when explicitly set — otherwise streamlink connects directly |
-| `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink stream priority list (audio-only when available, else 144p)                                                                       |
-| `STREAM_TTL_MINUTES`      | `15`               | Auto-stop stream after N minutes with zero listeners                                                                                         |
-
----
-
-## Directory Structure
-
-```
-yt-stream/
-├── packages/
-│   └── stream/             # Stream application
-│       └── src/
-│           ├── index.js            # Entry point, Fastify app setup, routes
-│           ├── stream-manager.js   # Core logic: lifecycle, streamlink→ffmpeg pipeline, TTL   *(removed by the refactor)*
-│           ├── proxy-list.js       # Reads proxy.json and returns the proxy list             *(now Config)*
-│           ├── icecast-client.js   # Icecast admin API polling (listeners, mountpoint status) *(now icecast.js)*
-│           └── health.js           # Health check logic (component status aggregation)       *(now healthMonitor.js)*
-├── proxy.json              # User-provided proxy list (JSON array of URL strings)
-├── Dockerfile
-├── docker-compose.yml
-├── package.json
-└── README.md
+docker pull node:24-alpine
+docker inspect node:24-alpine --format='{{index .RepoDigests 0}}'
+docker run --rm node:24-alpine apk info -a ffmpeg streamlink
 ```
 
 ---
 
-## Logging
+## 9. Logging
 
-JSON structured logs to stdout via [pino](https://github.com/pinojs/pino) (Fastify's default logger):
-
-```json
-{"level":"info","ts":"2025-01-01T12:00:00.000Z","msg":"stream started","youtube_url":"https://...","pid":12345}
-{"level":"warn","ts":"2025-01-01T12:05:00.000Z","msg":"ffmpeg exited unexpectedly","code":1}
-{"level":"error","ts":"2025-01-01T12:05:01.000Z","msg":"retry 3/10 failed","error":"Icecast connection refused"}
-```
+Every service logs to stdout/stderr → `docker logs`. The Node services use pino (JSON, level via `LOG_LEVEL`); Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
 
 ---
 
-## Tech Stack
+## 10. Testing, linting & CI
 
-| Layer          | Choice                     | Rationale                                         |
-| -------------- | -------------------------- | ------------------------------------------------- |
-| API server     | Node.js ≥ 24 LTS (Fastify) | Async I/O, fast HTTP layer, bundled pino logging  |
-| Stream extract | streamlink                 | Robust HLS client that keeps up with YouTube live |
-| Transcoder     | ffmpeg                     | Universal, widely available                       |
-| Stream server  | Icecast 2.4                | Battle-tested, ICY metadata, fan-out              |
-| Logging        | pino (Fastify default)     | Fastest JSON logger, zero-config with Fastify     |
-| Container      | Docker + Compose           | Images pinned by digest, one-command deploy       |
+- **Unit tests** — `node:test` with built-in `mock.fn()`/`mock.module` (`--experimental-test-module-mocks`), real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Coverage: process lifecycle and kill fallbacks, spawn args, proxy picking, Icecast admin client, pipeline orchestration (readiness polling, fail-fast, replace, TTL), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
+- **Linting & formatting** — `oxlint` + `oxfmt`, configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
+- **CI** — lint + format-check + tests on every PR open/update; dependency & secret scanning (§7.6); merge blocked on failure via branch protection.
 
 ---
 
-## Future Enhancements
+## 11. Recorded decisions log
 
-- **Multi-stream support** — manage multiple concurrent YouTube → Icecast pipelines
-- **Multiple bitrates / formats** — MP3 + AAC + Ogg at configurable quality levels
-- **Web UI** — simple dashboard showing active streams, listener counts, waveforms
+| #  | Decision                                                             | Rationale                                                                                                              |
+| -- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 1  | streamlink replaces yt-dlp for stream extraction (2026-08)           | streamlink's HLS client keeps up with YouTube's 30 s live window; bare ffmpeg/yt-dlp could not                         |
+| 2  | No explicit state machine — sequential `async/await`, derived phase  | The PoC state machine duplicated information the processes already expose; derived phase cannot drift from reality     |
+| 3  | Event bus carries only outward `stream:*` notifications              | Internal concerns observed directly per pipeline; the bus stays a thin logging seam, not an orchestration mechanism    |
+| 4  | API moved under `/api/` prefix                                       | Avoids the collision between the `/stream` management route and the `/stream` audio mount                              |
+| 5  | Caddy is the only public door; `handle` blocks everywhere            | Mixed path-matched directives reorder under Caddy's directive ordering — see the warning in §2                         |
+| 6  | Dedicated `health` container, published on its own port (#18)        | Independent failure domain; external probers cannot send auth headers; a wedged component cannot take the monitor down |
+| 7  | `/api/state` is key-exempt (#18)                                     | Read-only status needed by header-less probers; accepted exposure — see §7.1                                           |
+| 8  | Internal ports fixed at 8080 (all services) + Caddy liveness on 8089 | Per-container namespaces make them collision-free; only host-published ports need configuring                          |
+| 9  | Trivy image scanning dropped from CI                                 | Advisory DB re-rates CVEs over time → non-deterministic severity gate (§7.6)                                           |
+| 10 | npm-workspaces monorepo, `yt-stream-shared` Config                   | Two services, one env contract — no drift between copies                                                               |
+| 11 | Proxies: random pick per start, from a JSON list                     | Residential IPs are required to pass YouTube's bot checks; rotation spreads rate-limit exposure                        |

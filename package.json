@@ -33,9 +33,6 @@
   },
   "license": "MIT",
   "author": "Roman Charugin <romic+github@fastmail.com>",
-  "directories": {
-    "doc": "docs"
-  },
   "workspaces": [
     "packages/stream",
     "packages/health",
