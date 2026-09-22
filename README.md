@@ -26,33 +26,34 @@ A separate `shared` package holds the configuration common to both Node services
 
 ## Quickstart
 
+1. Create (or copy from example) `.env`
 ```bash
 cp .env.example .env
-# edit .env: set a real API_KEY (and optionally PUBLIC_BASE_URL, ports)
+```
+2. Set `API_KEY` to protect `/api/stream` endpoints
+```
+# editing .env
+API_KEY=<random-api-key-string>
+```
+3. Start the service
+```bash
 docker compose up -d --build
 ```
-
-Wait for the stack to come up, then check health:
-
+4. Wait for the stack to come up, then check health:
 ```bash
 curl http://localhost:8080/hc
 # {"caddy":{"result":"ok",...},"icecast":{"result":"ok",...},"stream":{"result":"ok",...}}
 ```
-
-Start a stream (default API key from `.env`):
-
+5. Start a stream (substitute `<your-api-key>` with API key set in `.env`)
 ```bash
-curl -H "Authorization: Bearer $API_KEY" \
+curl -H "Authorization: Bearer <your-api-key>" \
   "http://localhost/api/stream?url=https://www.youtube.com/watch?v=<id>"
 # 302 Found — Location: /stream
 ```
-
-Open `http://localhost/stream` in VLC, a browser, or any radio client.
-
-Stop it manually:
-
+6. Open `http://localhost/stream` in VLC, a browser, or any radio client.
+7. [Optional] Stop it manually (substitute `<your-api-key>` with API key set in `.env`):
 ```bash
-curl -X DELETE -H "Authorization: Bearer $API_KEY" http://localhost/api/stream
+curl -X DELETE -H "Authorization: Bearer <your-api-key>" http://localhost/api/stream
 ```
 
 The stream also stops on its own:
@@ -97,8 +98,6 @@ All `/api/*` endpoints except `/api/state` require an API key: `Authorization: B
 | `GET`    | `/hc` (alias `/health`) on `HEALTH_PORT` | —    | Component health of caddy / icecast / stream; `503` if any is down |
 
 Status codes for `GET /api/stream`: `302` success (redirect), `400` missing/invalid URL, `401` missing/invalid key, `429` another stream operation is in progress, `500` extraction/transcode/Icecast failure. `DELETE /api/stream` returns `200` (stopped), `404` (no active stream), or `429`.
-
-A stream also stops automatically after `STREAM_TTL_MINUTES` (default 15) with zero listeners.
 
 ## Configuration
 
