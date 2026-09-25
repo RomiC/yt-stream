@@ -86,7 +86,13 @@ services:
     image: yt-stream-stream:latest
     volumes:
       - stream-data:/app/data
-      - ./proxy.json:/app/proxy.json:ro
+      - type: bind
+        source: "${PROXY_FILE:-./proxy.json}"
+        target: /app/proxy.json
+        read_only: true
+        bind:
+          # Prevent creating path on host machine if PROXY_FILE is missing
+          create_host_path: false
     environment:
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-secret}"
       ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-admin}"
@@ -95,7 +101,6 @@ services:
       ALLOW_KEY_IN_QUERY: "${ALLOW_KEY_IN_QUERY:-false}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       STREAM_TTL_MINUTES: "${STREAM_TTL_MINUTES:-15}"
-      PROXY_FILE: "${PROXY_FILE:-}"
       STREAMLINK_QUALITY: "${STREAMLINK_QUALITY:-audio_only,worst}"
     restart: unless-stopped
     depends_on:

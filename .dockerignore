@@ -15,4 +15,5 @@ jsconfig.json
 .oxfmtrc.json
 .oxlintrc.json
 proxy.json
+proxy.json.example
 docker-compose.yml
