@@ -119,6 +119,10 @@ export class StreamPipeline {
       } catch (err) {
         lastError = err;
         await this.#killProcesses();
+        if (attempt < START_ATTEMPTS) {
+          // Wait for the IceCast mount point to be free from previous request
+          await this.#icecast.prepareMountPoint();
+        }
       }
     }
     throw lastError;
@@ -168,6 +172,10 @@ export class StreamPipeline {
         throw new IcecastUnreachableError();
       }
       if (status.mountpointActive) {
+        // A child may have exited while the status request was in flight.
+        if (!this.#streamlink?.isAlive() || !this.#ffmpeg?.isAlive()) {
+          throw this.#exitError(this.#lastExit);
+        }
         return;
       }
       if (Date.now() >= deadline) {

@@ -1,4 +1,4 @@
-import { describe, before, test, beforeEach } from 'node:test';
+import { describe, before, test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { silentLogger } from './helpers.js';
 
@@ -46,7 +46,8 @@ function fakeProxies(entries = []) {
 before(async (ctx) => {
   icecast = {
     status: { icecastReachable: true, mountpointActive: true, listeners: 0 },
-    getStatus: async () => ({ ...icecast.status })
+    getStatus: async () => ({ ...icecast.status }),
+    prepareMountPoint: mock.fn(async () => {})
   };
 
   ctx.mock.module('../src/icecastClient.js', {
@@ -180,6 +181,7 @@ before(async (ctx) => {
 beforeEach(() => {
   icecast.status = { icecastReachable: true, mountpointActive: true, listeners: 0 };
   icecast.getStatus = async () => ({ ...icecast.status });
+  icecast.prepareMountPoint.mock.resetCalls();
 });
 
 /** Drives a pipeline under mocked timers: our loops await between ticks, so drain microtasks after each. */
@@ -228,6 +230,36 @@ describe('StreamPipeline', () => {
         streamlink: { status: 'running' },
         ffmpeg: { status: 'running' }
       });
+    });
+
+    test('rotation: a failed attempt confirms the mount is free before retrying', async () => {
+      const pipeline = createPipeline();
+      StreamlinkFake.all = {
+        spawnProcess: function () {
+          this.spawned = true;
+          this.die();
+          return this;
+        }
+      };
+
+      await assert.rejects(pipeline.start(SOURCE_URL), /streamlink exited/);
+
+      // Two retries ran, each waiting for the mount released by the previous attempt.
+      assert.equal(icecast.prepareMountPoint.mock.callCount(), 2);
+    });
+
+    test('a child exiting while the mount check is in flight does not pass as ready', async () => {
+      const pipeline = createPipeline();
+      icecast.getStatus = async () => {
+        ffmpegInstances.at(-1)?.die(null, 'SIGKILL'); // dies while the status request is in flight
+        return { icecastReachable: true, mountpointActive: true, listeners: 0 };
+      };
+
+      await assert.rejects(
+        pipeline.start(SOURCE_URL),
+        /ffmpeg exited before the mountpoint became active \(signal SIGKILL\)/
+      );
+      assert.equal(pipeline.hasStarted, false);
     });
 
     test('rotation: a failed attempt retries with a fresh pair and the next proxy', async () => {
