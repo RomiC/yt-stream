@@ -109,17 +109,17 @@ describe('Auth', () => {
 
   describe('protects all /api routes', () => {
     function makeDeps() {
-      const streamService = {
+      const stream = {
         start: async () => {},
         stop: async () => {},
         getStatus: async () => ({
           general: { state: 'idle', url: null }
         })
       };
-      const serviceState = {
+      const statusReport = {
         getStatus: async () => ({ general: { health: 'ok', state: 'idle', url: null } })
       };
-      return { streamService, serviceState };
+      return { stream, statusReport };
     }
 
     async function buildFullApp(config = makeConfig()) {

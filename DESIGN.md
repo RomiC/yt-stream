@@ -7,7 +7,7 @@ A self-hosted service that converts a YouTube live stream or video into an Iceca
 - **Single entry point** — the application is reachable only through Caddy (one public URL); the health monitor is the single deliberate exception, published on its own port.
 - **Convenience preserved** — a client can start and tune into a stream with a single `GET` request.
 - **Minimal dependencies** — Node built-ins where possible; only battle-tested external components (Fastify, streamlink, ffmpeg, Icecast, Caddy).
-- **Fail loud** — a failed start fails the HTTP request; no hidden retry loops.
+- **Fail loud** — a failed start fails the HTTP request; the start-attempt rotation is logged (proxy per attempt), never hidden.
 
 ---
 
@@ -38,17 +38,20 @@ packages/
 │   └── index.js                #   public exports
 ├── stream/src/
 │   ├── events.js               # event bus + exported Event map (stream:* notifications)
-│   ├── childProcess.js         # base class: process lifecycle, kill, stderr in the exit payload
+│   ├── childProcess.js         # one-shot wrapper: one instance = one process (spawn/kill/exit payload)
 │   ├── streamlink.js           # streamlink process: fetch the stream
+│   ├── proxyList.js            # ProxyList entity: optional file → pool (warn+degrade), request-scoped rotation
 │   ├── ffmpeg.js               # ffmpeg process: transcode stdin → Icecast output URL
-│   ├── icecast.js              # passive admin client (getStatus), sourceUrl, streamUrl, mount-clear readiness
-│   ├── serviceState.js         # /api/state facade: status snapshot + ok/failure verdict
-│   ├── stream.js               # orchestration: StreamPipeline (per-generation) + live-pipelines map
+│   ├── icecastClient.js        # Icecast admin-API client: getStatus, sourceUrl, streamUrl, mount-clear readiness
+│   ├── statusReport.js         # /api/state snapshot + ok/failure verdict
+│   ├── streamPipeline.js       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
+│   ├── stream.js               # orchestration: replace/stop pipelines, event accounting, health snapshot
 │   ├── ttlWatcher.js           # zero-listener TTL: polls Icecast, notifies owner via onExpired
 │   ├── auth.js                 # API key validation (Fastify hook; exempts /api/state)
 │   ├── routes.js               # HTTP handlers
 │   ├── utils/
 │   │   ├── isValidYoutubeUrl.js  # SSRF-guard URL validation
+│   │   ├── redactProxy.js        # strip proxy credentials for logging
 │   │   └── getYoutubeMeta.js     # YouTube oEmbed metadata
 │   └── index.js                # bootstrap
 ├── health/src/
@@ -143,7 +146,7 @@ One in-flight operation at a time: the route holds a `requestInProgress` flag; c
 
 ### 4.1 No state machine
 
-There is no explicit state machine. Each generation is a `StreamPipeline` that owns its own streamlink/ffmpeg processes, the TTL watcher, and the Icecast client. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#current` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus Icecast mount readiness:
+There is no explicit state machine. Each generation is a `StreamPipeline` that owns the TTL watcher, the `IcecastClient`, and the current streamlink/ffmpeg pair — a **fresh pair per start attempt**: a wrapper instance mirrors exactly one process, so a retry constructs new instances. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#currentPipeline` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus Icecast mount readiness:
 
 - `starting` — processes alive, mount not yet active
 - `streaming` — processes alive, mount active
@@ -154,17 +157,18 @@ There is no explicit state machine. Each generation is a `StreamPipeline` that o
 `start(url)` runs strictly sequentially with `async/await`:
 
 1. If the same URL is already streaming — return immediately (idempotent).
-2. Stop any existing pipeline (kill streamlink + ffmpeg, await exit; the old stream ends with reason `replaced` **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for).
+2. Stop any existing pipeline — the TTL watcher first, then both processes killed in parallel and awaited (the old stream ends with reason `replaced` **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for).
 3. `prepareMountPoint()` — Icecast reachable and the mount free (old source released).
-4. streamlink picks a proxy itself — a random entry from `config.proxyList` (direct when the list is empty).
-5. Spawn streamlink + ffmpeg, pipe them, then wait for the Icecast mount to become active (30 s budget, 500 ms poll interval) — proof the pipeline works end-to-end.
-6. Fail fast when a process exits before the mount is active (attributed with its exit code/signal and stderr tail); a timeout also fails the request. Any step throwing maps to `500` — **no retries**.
+4. The pipeline draws the proxy from a per-request `ProxyList` rotation: a fresh shuffle per start, attempts advance without repeating (reshuffling once exhausted). An empty pool means direct connection — the optional file's absence or malformation warns but never blocks startup.
+5. Spawn streamlink + ffmpeg, pipe them, then wait for the Icecast mount to become active (30 s budget, 500 ms poll interval) — proof the pipeline works end-to-end. A failed attempt is retried up to 3 times: both processes are torn down and the pipeline **advances to the next pool entry** (a poisoned exit is never retried through itself). Each attempt logs the redacted proxy.
+6. Fail fast when a process exits before the mount is active (attributed with its exit code/signal and stderr tail); a timeout also fails the attempt. Exhausted attempts fail the request (the failure log carries the last proxy); any other step throwing maps to `500` — no retries outside the start-attempt loop.
 7. On success: start the TTL watcher, fetch YouTube oEmbed metadata and push `<author> - <title>` to Icecast (best-effort — unavailable metadata never fails the stream), emit `stream:started`.
 
 A failed start tears the failed pipeline down and emits `stream:error` (it never emitted `stream:started`).
 
 ### 4.3 Failure semantics & auto-stop
 
+- **Process wrappers are one-shot** — each instance mirrors exactly one process: constructed, spawned once, running, exited (terminal); a second spawn throws. The owner marks a kill *before* signaling, so its close is silent; every other exit — including a clean `code: 0` end of a finite source — reaches `onExit` with `{ cmd, code, signal, pid, errors }`. The consumer interprets: the same payload means "source ended", "attempt failed", or "crash" depending on the phase.
 - **Unexpected process exit** (streamlink or ffmpeg dies) → the pipeline is stopped with reason `process-exit`; the signal in the exit payload makes external kills (OOM, `docker kill`) self-explaining.
 - **Zero-listener TTL** — the TTL watcher polls Icecast every 60 s; `STREAM_TTL_MINUTES` (default 15) of zero listeners tears the pipeline down (reason `ttl`).
 - A stream that lost its source (mount gone) is reaped by the same TTL watcher (no listeners → TTL). An **unreachable Icecast** counts as zero listeners — admin, source and listeners share port 8080, so nobody can be listening — which also reaps a black-holed pipeline where ffmpeg blocks silently without exiting.
@@ -174,7 +178,7 @@ A failed start tears the failed pipeline down and emits `stream:error` (it never
 
 ## 5. Event bus
 
-A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.js` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for unexpected exits (deliberate kills stay silent).
+A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.js` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for exits the owner did not cause (owner kills stay silent).
 
 | Event            | Emitted by | Consumed by | Payload                                                      |
 | ---------------- | ---------- | ----------- | ------------------------------------------------------------ |
@@ -182,7 +186,7 @@ A small pub/sub bus carries the outward stream lifecycle notifications. `Stream`
 | `stream:stopped` | stream     | logging     | `{ url, reason: manual \| replaced \| process-exit \| ttl }` |
 | `stream:error`   | stream     | logging     | `{ url, error }`                                             |
 
-Every pipeline teardown declares its reason. Operational logging is centralized in `Stream` — collaborators expose facts (full stderr in the exit payload, the redacted `lastProxy`) instead of logging.
+Every pipeline teardown declares its reason. Operational logging flows through the shared pino logger: `Stream` reports lifecycle transitions; collaborators report their own low-level facts directly (pipeline attempt starts, Icecast poll failures).
 
 ---
 
@@ -263,7 +267,7 @@ Every service logs to stdout/stderr → `docker logs`. The Node services use pin
 
 ## 10. Testing, linting & CI
 
-- **Unit tests** — `node:test` with built-in `mock.fn()`/`mock.module` (`--experimental-test-module-mocks`), real processes where sensible (the `ChildProcess` base is tested against real `node` processes). Coverage: process lifecycle and kill fallbacks, spawn args, proxy picking, Icecast admin client, pipeline orchestration (readiness polling, fail-fast, replace, TTL), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
+- **Unit tests** — `node:test` with built-in `mock.fn()`/`mock.module` (`--experimental-test-module-mocks`), real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real `node` processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
 - **Linting & formatting** — `oxlint` + `oxfmt`, configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
 - **CI** — lint + format-check + tests on every PR open/update; dependency & secret scanning (§7.6); merge blocked on failure via branch protection.
 
@@ -284,3 +288,9 @@ Every service logs to stdout/stderr → `docker logs`. The Node services use pin
 | 9  | Trivy image scanning dropped from CI                                 | Advisory DB re-rates CVEs over time → non-deterministic severity gate (§7.6)                                           |
 | 10 | npm-workspaces monorepo, `yt-stream-shared` Config                   | Two services, one env contract — no drift between copies                                                               |
 | 11 | Proxies: random pick per start, from a JSON list                     | Residential IPs are required to pass YouTube's bot checks; rotation spreads rate-limit exposure                        |
+| 12 | `PROXY_FILE` is host-side only; in-container path fixed (#35)         | Compose mounts `${PROXY_FILE:-./proxy.json}` with `create_host_path: false` — the mount is the knob; a missing file fails `up` loudly instead of silently creating a directory; the app reads exactly `/app/proxy.json`, no cwd-relative fallback |
+| 13 | Start attempts rotate proxies; failures log the proxy (#35)          | Attempts draw from a per-request shuffled rotation — a poisoned exit is never retried through itself; per-attempt redacted-proxy logs make bad exits diagnosable in one line |
+| 14 | `ProxyList` owns file→pool; rotation is a per-request iterator      | Only the stream consumes proxies, and only it has a logger at load time — load problems warn and degrade to a direct connection; rotation state lives in the iterator, so interleaved starts cannot corrupt each other |
+| 15 | `socks5`/`socks5h` proxy schemes accepted (#35 follow-up)             | streamlink delegates to requests; PySocks ships with the Alpine streamlink package (verified in-image); `socks5h` resolves DNS at the exit — preferred for residential providers |
+| 16 | Process wrappers are one-shot: one instance = one process            | The host model emulated process identity inside a longer-lived object (kill-mark graveyard, null-proc tri-state, replace-on-spawn). One-shot instances make identity real; retries construct fresh pairs; `spawn`/`onExit` chain, `kill` stays a promise |
+| 17 | `StreamPipeline` lives in its own module                             | Each layer gets its own test seam: the pipeline is tested against mocked wrappers/Icecast, `Stream` against a fake pipeline — instead of both through one facade |

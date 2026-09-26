@@ -13,7 +13,7 @@ export class IcecastUnreachableError extends Error {
  * Icecast admin client. Passive — it only fetches when asked (getStatus)
  * and knows nothing about polling schedules; the caller (Stream) owns them.
  */
-export class Icecast {
+export class IcecastClient {
   #host;
   #port;
   #sourcePassword;

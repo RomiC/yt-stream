@@ -1,17 +1,6 @@
-import { readFileSync } from 'node:fs';
-
 function parseIntEnv(value, fallback) {
   const parsed = parseInt(value, 10);
   return Number.isNaN(parsed) ? fallback : parsed;
-}
-
-function isValidProxyUrl(proxy) {
-  try {
-    const url = new URL(proxy);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -26,7 +15,7 @@ export class Config {
   #publicBaseUrl;
   #logLevel;
   #streamTtlMinutes;
-  #proxyList;
+  #proxyFile;
   #streamlinkQuality;
   #apiKey;
   #allowKeyInQuery;
@@ -53,7 +42,7 @@ export class Config {
     this.#publicBaseUrl = this.#normalizeBaseUrl(env.PUBLIC_BASE_URL || 'http://localhost');
     this.#logLevel = env.LOG_LEVEL || 'info';
     this.#streamTtlMinutes = parseIntEnv(env.STREAM_TTL_MINUTES, 15);
-    this.#proxyList = this.#loadProxyList(env.PROXY_FILE);
+    this.#proxyFile = '/app/proxy.json'; // fixed: the compose bind-mount target
     this.#streamlinkQuality = env.STREAMLINK_QUALITY || 'audio_only,worst';
     this.#apiKey = env.API_KEY || 'dev-api-key';
     this.#allowKeyInQuery = env.ALLOW_KEY_IN_QUERY === 'true';
@@ -74,21 +63,9 @@ export class Config {
     return normalizedUrl;
   }
 
-  /** Reads the PROXY_FILE (a JSON array of proxy URL strings) once at startup. */
-  #loadProxyList(proxyFile) {
-    if (!proxyFile) {
-      return [];
-    }
-
-    try {
-      const parsed = JSON.parse(readFileSync(proxyFile, 'utf-8'));
-
-      return Array.isArray(parsed)
-        ? parsed.filter((proxy) => typeof proxy === 'string' && proxy.trim() !== '' && isValidProxyUrl(proxy))
-        : [];
-    } catch {
-      return [];
-    }
+  /** Path to the optional proxy list inside the stream container (compose bind-mount target). */
+  get proxyFile() {
+    return this.#proxyFile;
   }
 
   get health() {
@@ -117,11 +94,6 @@ export class Config {
 
   get streamTtlMinutes() {
     return this.#streamTtlMinutes;
-  }
-
-  /** Valid proxy URLs, e.g. ['http://user:pass@1.12.2.2:8883']; empty when unset. */
-  get proxyList() {
-    return this.#proxyList;
   }
 
   get streamlinkQuality() {

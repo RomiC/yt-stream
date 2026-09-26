@@ -1,0 +1,5 @@
+[
+  "http://user:pass@gate.example.com:7000",
+  "https://user-session-a1b2c3:pass@gate.example.com:10001",
+  "socks5h://user:pass@gate.example.com:1080"
+]

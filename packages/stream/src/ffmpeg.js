@@ -3,8 +3,7 @@ import { ChildProcess } from './childProcess.js';
 /**
  * Owns the ffmpeg child process. ffmpeg's source (input) is streamlink's
  * stdout, piped into its stdin by the caller; it transcodes that to MP3 and
- * pushes it to the Icecast output URL. One process at a time;
- * spawnProcess replaces any previous process.
+ * pushes it to the Icecast output URL. One process per instance.
  */
 export class Ffmpeg extends ChildProcess {
   constructor() {
@@ -14,10 +13,9 @@ export class Ffmpeg extends ChildProcess {
   /**
    * Spawns ffmpeg pushing transcoded audio to `outputUrl`. Knows nothing
    * about its source (streamlink) or Icecast readiness — the caller pipes
-   * the source into stdin and verifies the mountpoint. Resolves with this
-   * instance.
+   * the source into stdin and verifies the mountpoint. Returns this instance.
    */
-  async spawnProcess(outputUrl) {
+  spawnProcess(outputUrl) {
     const args = [
       '-i',
       '-',
@@ -31,7 +29,7 @@ export class Ffmpeg extends ChildProcess {
       'mp3',
       outputUrl
     ];
-    await this.spawn(args, ['pipe', 'ignore', 'pipe']);
+    this.spawn(args, ['pipe', 'ignore', 'pipe']);
     return this;
   }
 }

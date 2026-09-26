@@ -1,15 +1,15 @@
 /**
- * Returns stream service state
+ * Builds the /api/state snapshot: the stream status plus an ok/failure verdict.
  */
-export class ServiceState {
-  #streamService;
+export class StatusReport {
+  #stream;
 
-  constructor({ streamService }) {
-    this.#streamService = streamService;
+  constructor({ stream }) {
+    this.#stream = stream;
   }
 
   async getStatus() {
-    const status = await this.#streamService.getStatus();
+    const status = await this.#stream.getStatus();
     const healthy =
       status.icecast.status === 'available' &&
       (status.general.state !== 'streaming' ||

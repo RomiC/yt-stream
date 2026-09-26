@@ -3,7 +3,8 @@ import { Config } from 'yt-stream-shared';
 import { registerAuth, logRedact } from './auth.js';
 import { EventBus, Event } from './events.js';
 import { Stream } from './stream.js';
-import { ServiceState } from './serviceState.js';
+import { ProxyList } from './proxyList.js';
+import { StatusReport } from './statusReport.js';
 import { registerRoutes } from './routes.js';
 
 const config = new Config();
@@ -13,7 +14,13 @@ const app = Fastify({
 });
 
 const events = new EventBus();
-const streamService = new Stream({ config, logger: app.log, events });
+const proxies = new ProxyList(config.proxyFile, app.log);
+const stream = new Stream({
+  config,
+  logger: app.log,
+  events,
+  proxies
+});
 
 events.on(Event.streamStarted, ({ url }) => app.log.info({ url }, 'stream started'));
 events.on(Event.streamStopped, ({ url, reason }) => app.log.info({ url, reason }, 'stream stopped'));
@@ -29,9 +36,9 @@ if (config.apiKey === 'dev-api-key') {
   app.log.warn('Using default API key — set API_KEY in production');
 }
 
-const serviceState = new ServiceState({ streamService });
+const statusReport = new StatusReport({ stream });
 
 registerAuth(app, { config });
-registerRoutes(app, { streamService, serviceState });
+registerRoutes(app, { stream, statusReport });
 
 await app.listen({ port: config.stream.port, host: '0.0.0.0' });
