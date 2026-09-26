@@ -1,6 +1,10 @@
-import { describe, before, test, mock, beforeEach } from 'node:test';
+import { describe, before, test, mock, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EventBus, Event } from '../src/events.js';
+import { ProxyList } from '../src/proxyList.js';
 import { silentLogger, flushAsync, sleep } from './helpers.js';
 
 const URL = 'https://youtube.com/watch?v=abc';
@@ -16,6 +20,20 @@ let FfmpegFake;
 let Stream;
 let youtubeMeta = Promise.resolve(null);
 let getYoutubeMetaFake = mock.fn(() => youtubeMeta);
+
+/** Collects (fields, message) pairs per level for log assertions. */
+function captureLogger() {
+  const entries = [];
+  const record = (level) => (fields, message) => {
+    entries.push(typeof fields === 'string' ? { level, msg: fields } : { level, ...fields, msg: message });
+  };
+  const logger = { entries };
+  for (const level of ['debug', 'info', 'warn', 'error', 'fatal']) {
+    logger[level] = record(level);
+  }
+  logger.child = () => logger;
+  return logger;
+}
 
 before(async (ctx) => {
   icecastInstances = [];
@@ -72,6 +90,8 @@ before(async (ctx) => {
     }
 
     die(code = 1, signal = null) {
+      // Faithful to ChildProcess: liveness flips before close callbacks run.
+      this.spawned = false;
       for (const callback of this.exitCallbacks) {
         callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
       }
@@ -81,12 +101,8 @@ before(async (ctx) => {
       return 'streamlink';
     }
 
-    get lastProxy() {
-      return null;
-    }
-
-    async spawnProcess(url) {
-      this.spawnCalls.push(url);
+    async spawnProcess(url, proxy = null) {
+      this.spawnCalls.push({ url, proxy });
       this.spawned = true;
       return this;
     }
@@ -124,6 +140,8 @@ before(async (ctx) => {
     }
 
     die(code = 1, signal = null) {
+      // Faithful to ChildProcess: liveness flips before close callbacks run.
+      this.spawned = false;
       for (const callback of this.exitCallbacks) {
         callback({ code, signal, pid: 4242, errors: this.errorTail ?? '' });
       }
@@ -196,13 +214,29 @@ beforeEach(() => {
   youtubeMeta = Promise.resolve(null);
   getYoutubeMetaFake.mock.resetCalls();
 });
+
+const proxyTempDirs = [];
+after(() => {
+  for (const dir of proxyTempDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A real ProxyList fed from a temp file — rotation stays real in these tests. */
+function proxiesFromFile(entries) {
+  const dir = mkdtempSync(join(tmpdir(), 'yt-stream-pool-'));
+  proxyTempDirs.push(dir);
+  writeFileSync(join(dir, 'proxy.json'), JSON.stringify(entries));
+  return new ProxyList(join(dir, 'proxy.json'), silentLogger());
+}
+
 /**
  * Builds a Stream with fresh fakes. The per-set instances (streamlink, ffmpeg,
  * ttlWatcher) are getters that resolve to the CURRENT set at access time — so
  * read them *after* the relevant start()/stop(). icecast is a single shared
  * instance.
  */
-function createStream(timeouts = {}) {
+function createStream(timeouts = {}, logger = silentLogger(), proxies = proxiesFromFile([])) {
   icecastInstances = [];
   streamlinkInstances = [];
   ffmpegInstances = [];
@@ -212,7 +246,6 @@ function createStream(timeouts = {}) {
     config: {
       streamTtlMinutes: 15,
       streamlinkQuality: 'audio_only,worst',
-      proxyList: [],
       icecast: {
         host: 'icecast',
         port: 8000,
@@ -221,7 +254,8 @@ function createStream(timeouts = {}) {
       },
       publicBaseUrl: 'http://localhost'
     },
-    logger: silentLogger(),
+    proxies,
+    logger,
     events,
     timeouts
   });
@@ -252,7 +286,7 @@ describe('Stream', () => {
 
       await app.stream.start(URL);
 
-      assert.deepEqual(app.streamlink.spawnCalls, [URL]);
+      assert.deepEqual(app.streamlink.spawnCalls, [{ url: URL, proxy: null }]);
       assert.deepEqual(app.ffmpeg.spawnCalls, [SOURCE_URL]);
       assert.equal(app.streamlink.pipeCalls[0], app.ffmpeg);
       assert.deepEqual(app.ttlWatcher.watched, [URL]);
@@ -352,6 +386,87 @@ describe('Stream', () => {
         /ffmpeg exited before the mountpoint became active \(signal SIGKILL\)/
       );
       assert.equal((await app.stream.getStatus()).general.state, 'idle');
+    });
+
+    test('rotation: a failed start attempt is retried with a fresh proxy pick', async () => {
+      const app = createStream({}, undefined, proxiesFromFile(['http://a:3128', 'http://b:3128']));
+      const onStarted = mock.fn();
+      const onError = mock.fn();
+      app.events.on(Event.streamStarted, onStarted);
+      app.events.on(Event.streamError, onError);
+      let spawnCalls = 0;
+      StreamlinkFake.next = {
+        spawnProcess: async function (url, proxy) {
+          spawnCalls += 1;
+          this.spawnCalls.push({ url, proxy });
+          this.spawned = true;
+          if (spawnCalls === 1) {
+            this.errorTail = 'error: Unable to open URL: 403 Forbidden\n';
+            this.die();
+          }
+          return this;
+        }
+      };
+
+      await app.stream.start(URL);
+
+      const picked = app.streamlink.spawnCalls.map((call) => call.proxy);
+      assert.equal(spawnCalls, 2);
+      assert.notEqual(picked[0], picked[1], 'the retry must not repeat the failed proxy');
+      assert.ok(picked.every((proxy) => ['http://a:3128', 'http://b:3128'].includes(proxy)));
+      assert.equal(streamlinkInstances.length, 1, 'rotation retries within the same pipeline');
+      assert.equal(onStarted.mock.callCount(), 1);
+      assert.equal(onError.mock.callCount(), 0);
+      assert.equal((await app.stream.getStatus()).general.state, 'streaming');
+    });
+
+    test('rotation: exhausting all attempts fails the start once, with attribution', async () => {
+      const app = createStream();
+      const onError = mock.fn();
+      app.events.on(Event.streamError, onError);
+      let spawnCalls = 0;
+      StreamlinkFake.next = {
+        spawnProcess: async function () {
+          spawnCalls += 1;
+          this.spawned = true;
+          this.errorTail = 'error: Unable to open URL: 403 Forbidden\n';
+          this.die();
+          return this;
+        }
+      };
+
+      await assert.rejects(
+        app.stream.start(URL),
+        /streamlink exited before the mountpoint became active.*403 Forbidden/
+      );
+
+      assert.equal(spawnCalls, 3);
+      assert.equal(onError.mock.callCount(), 1);
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
+    });
+
+    test('each start attempt logs the redacted proxy; the failure log carries the last one', async () => {
+      const logger = captureLogger();
+      const app = createStream({}, logger, proxiesFromFile(['http://user:secret@proxy:3128']));
+      StreamlinkFake.next = {
+        spawnProcess: async function () {
+          this.spawned = true;
+          this.die();
+          return this;
+        }
+      };
+
+      await assert.rejects(app.stream.start(URL), /streamlink exited/);
+
+      const attempts = logger.entries.filter((entry) => entry.msg === 'starting streamlink');
+      assert.deepEqual(
+        attempts.map((entry) => entry.attempt),
+        [1, 2, 3]
+      );
+      assert.ok(attempts.every((entry) => entry.proxy === 'http://proxy:3128'));
+      const failure = logger.entries.find((entry) => entry.msg === 'failed to start stream');
+      assert.equal(failure.level, 'error');
+      assert.equal(failure.proxy, 'http://proxy:3128');
     });
 
     test('readiness: keeps polling until the mountpoint becomes active', async () => {
@@ -506,9 +621,8 @@ describe('Stream', () => {
         if (first) {
           first = false;
           await gate; // the stale TTL teardown waits here
-          return true;
         }
-        return true; // the replace teardown passes through
+        return true;
       };
       app.ttlWatcher.expire(); // -> #stopPipeline('ttl', A) gated on streamlink.kill
 
@@ -523,6 +637,21 @@ describe('Stream', () => {
       assert.equal(onStopped.mock.calls.filter((call) => call.arguments[0].reason === 'ttl').length, 0);
       // The replacement's ffmpeg survived the stale teardown.
       assert.equal(app.ffmpeg.spawned, true);
+    });
+
+    test('a pipe cascade (both processes dying) emits exactly one stream:stopped', async () => {
+      const app = createStream();
+      const onStopped = mock.fn();
+      app.events.on(Event.streamStopped, onStopped);
+
+      await app.stream.start(URL);
+      app.streamlink.die(); // streamlink failure notice first
+      app.ffmpeg.die(); // ffmpeg follows before the teardown kill lands
+      await flushAsync();
+
+      assert.equal(onStopped.mock.callCount(), 1);
+      assert.deepEqual(onStopped.mock.calls[0].arguments[0], { reason: 'process-exit', url: URL });
+      assert.equal((await app.stream.getStatus()).general.state, 'idle');
     });
 
     test('a late process-exit after a manual stop does not emit stream:stopped twice', async () => {

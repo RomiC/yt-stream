@@ -3,17 +3,19 @@ import { Event } from './events.js';
 import { Ffmpeg } from './ffmpeg.js';
 import { Icecast, IcecastUnreachableError } from './icecast.js';
 import { TTLWatcher } from './ttlWatcher.js';
+import { redactProxy } from './utils/redactProxy.js';
 import { getYoutubeMeta } from './utils/getYoutubeMeta.js';
 
 const MOUNTPOINT_TIMEOUT = 30_000; // streamlink open + ffmpeg connecting to Icecast
 const POLL_INTERVAL = 500;
+const START_ATTEMPTS = 3; // each attempt re-picks the proxy
 
 /**
  * One stream generation: owns its own streamlink/ffmpeg processes, the TTL
  * watcher and the Icecast client, plus the url/startedAt identity. Its phase
  * is derived from its own process liveness and Icecast readiness, so it is
- * self-describing. It neither logs nor emits events — Stream observes it via
- * onExit/onExpired and reports.
+ * self-describing. It emits no events — Stream observes it via
+ * onExit/onExpired. It logs only its per-attempt starts, through the shared logger.
  */
 export class StreamPipeline {
   #id;
@@ -25,17 +27,24 @@ export class StreamPipeline {
   #icecast;
   #mountpointTimeout;
   #pollInterval;
+  #startAttempts;
+  #proxies;
+  #logger;
   #ready = false;
+  #lastProxy = null;
   #exitCallbacks = [];
   #lastExit = null;
 
-  constructor({ id, url, streamlinkQuality, proxyList, streamTtlMinutes, icecast, timeouts = {} }) {
+  constructor({ id, url, streamlinkQuality, proxies, streamTtlMinutes, icecast, logger, timeouts = {} }) {
     this.#id = id;
     this.#url = url;
     this.#startedAt = null;
     this.#mountpointTimeout = timeouts.mountpointTimeout ?? MOUNTPOINT_TIMEOUT;
     this.#pollInterval = timeouts.pollInterval ?? POLL_INTERVAL;
-    this.#streamlink = new Streamlink({ streamlinkQuality, proxyList });
+    this.#startAttempts = Math.max(1, timeouts.startAttempts ?? START_ATTEMPTS);
+    this.#proxies = proxies;
+    this.#logger = logger;
+    this.#streamlink = new Streamlink({ streamlinkQuality });
     this.#ffmpeg = new Ffmpeg();
     this.#ttlWatcher = new TTLWatcher({ streamTtlMinutes, icecast });
     this.#icecast = icecast;
@@ -76,12 +85,12 @@ export class StreamPipeline {
     return this.#ttlWatcher;
   }
 
-  /** Last picked proxy, already redacted — for logging. */
+  /** Proxy picked for the latest attempt, already redacted — for logging. */
   get lastProxy() {
-    return this.#streamlink.lastProxy;
+    return this.#lastProxy;
   }
 
-  /** Subscribes to an unexpected exit of either process (deliberate kills stay silent). */
+  /** Subscribes to an unexpected exit of either process (owner kills stay silent). */
   onExit(callback) {
     this.#exitCallbacks.push(callback);
   }
@@ -91,30 +100,61 @@ export class StreamPipeline {
     this.#ttlWatcher.onExpired(callback);
   }
 
+  /** True once a start attempt has fully succeeded — mid-start exits belong to the retry loop. */
+  get hasStarted() {
+    return this.#startedAt !== null;
+  }
+
   isStreaming() {
     return this.phase === 'streaming';
   }
 
   /**
    * Spawns streamlink + ffmpeg, pipes them, then waits until the Icecast
-   * mount is active (proof the pipeline is end-to-end working). Fails fast
-   * with attribution if a process dies or Icecast drops; throws if the
-   * mount never becomes active within the budget. Sets #ready on success.
+   * mount is active (proof the pipeline works end-to-end). Up to
+   * `startAttempts` attempts; each one re-picks the proxy (a poisoned exit
+   * no longer burns the whole budget) and both processes are torn down
+   * between attempts. Fails fast with attribution if a process dies or
+   * Icecast drops; throws if the mount never becomes active within the budget.
    */
   async start(sourceUrl) {
     this.#ready = false;
-    await this.#streamlink.spawnProcess(this.#url);
+    // Per-request rotation: created, consumed, and discarded within this start.
+    const proxyRotation = this.#proxies.pickProxies();
+    let lastError;
+    for (let attempt = 1; attempt <= this.#startAttempts; attempt++) {
+      try {
+        await this.#startAttempt(sourceUrl, attempt, proxyRotation.next().value ?? null);
+        this.#ready = true;
+        this.#startedAt = Date.now();
+        return;
+      } catch (err) {
+        lastError = err;
+        await this.#killProcesses();
+      }
+    }
+    throw lastError;
+  }
+
+  async #startAttempt(sourceUrl, attempt, proxy) {
+    this.#lastExit = null;
+    this.#lastProxy = proxy ? redactProxy(proxy) : null;
+    this.#logger.info({ attempt, maxAttempts: this.#startAttempts, proxy: this.#lastProxy }, 'starting streamlink');
+    await this.#streamlink.spawnProcess(this.#url, proxy);
     await this.#ffmpeg.spawnProcess(sourceUrl);
     this.#streamlink.pipe(this.#ffmpeg);
     await this.#waitReady();
-    this.#ready = true;
-    this.#startedAt = Date.now();
+  }
+
+  /** Kills both processes (owner kills — their exits stay silent). */
+  async #killProcesses() {
+    await this.#streamlink.kill();
+    await this.#ffmpeg.kill();
   }
 
   /** Idempotent stop: kills its own processes and stops its watcher. */
   async stop() {
-    await this.#streamlink.kill();
-    await this.#ffmpeg.kill();
+    await this.#killProcesses();
     this.#ttlWatcher.stop();
   }
 
@@ -169,7 +209,8 @@ export class StreamPipeline {
  * `#current` (live pipelines live in `#pipelines`, keyed by id; a stepping
  * stone to multi-stream). Control flow is sequential async/await; background
  * concerns (process exits, TTL) are observed directly per pipeline. The bus
- * carries only outward stream:* notifications, and Stream is the sole logger.
+ * carries only outward stream:* notifications; the shared logger is passed
+ * to collaborators that report their own facts (pipeline attempts, Icecast polls).
  */
 export class Stream {
   #logger;
@@ -180,16 +221,19 @@ export class Stream {
   #streamlinkOptions;
   #streamTtlMinutes;
   #pipelines = new Map();
+  // Sets whose teardown has been accounted — a repeated teardown (e.g. a late
+  // process-exit after a manual stop) must not emit stream:stopped twice.
+  #finalizedSets = new WeakSet();
   #current = null;
   #lastUrl = null;
 
-  constructor({ config, logger, events, timeouts = {} }) {
+  constructor({ config, logger, events, proxies, timeouts = {} }) {
     this.#logger = logger;
     this.#events = events;
     this.#timeouts = timeouts;
     this.#streamlinkOptions = {
       streamlinkQuality: config.streamlinkQuality,
-      proxyList: config.proxyList
+      proxies
     };
     this.#streamTtlMinutes = config.streamTtlMinutes;
     this.#icecast = new Icecast({
@@ -209,6 +253,7 @@ export class Stream {
       ...this.#streamlinkOptions,
       streamTtlMinutes: this.#streamTtlMinutes,
       icecast: this.#icecast,
+      logger: this.#logger,
       timeouts: this.#timeouts
     });
     set.onExit((wrapper, exit) => this.#onProcessExited(set, wrapper, exit));
@@ -224,22 +269,32 @@ export class Stream {
   /**
    * Tears down `set` (its own processes), removes it from the live-pipelines
    * map, and — only if it is still the current stream and was streaming —
-   * emits stream:stopped.
+   * emits stream:stopped. Liveness is judged by hasStarted: a crashed
+   * process already reads as phase 'stopped', so isStreaming() would swallow
+   * the stop event for the very crashes it reports. Finalized sets are
+   * skipped — their stop event has been accounted (or was never eligible).
    */
   async #stopPipeline(set = this.#current, reason) {
-    if (!set) {
+    if (!set || this.#finalizedSets.has(set)) {
       return;
     }
-    const wasStreaming = set.isStreaming();
+    // Captured before stop(): mid-await a concurrent teardown (TTL racing a
+    // replace) must still see the live set.
+    const isLiveStream = set.hasStarted;
     await set.stop();
+    this.#finalizedSets.add(set);
     this.#discardPipeline(set);
-    if (this.#current === set && wasStreaming) {
+    if (this.#current === set && isLiveStream) {
       this.#current = null;
       this.#events.emit(Event.streamStopped, { reason, url: set.url });
     }
   }
 
   async #onProcessExited(set, wrapper, exit) {
+    // Mid-start exits are owned by the start retry loop (rotation + attribution).
+    if (!set.hasStarted) {
+      return;
+    }
     const { how, tail } = this.#exitFacts(exit);
     this.#logger.error({ cmd: wrapper.command, exit: how, tail }, 'unexpected process exit');
     await this.#stopPipeline(set, 'process-exit');
@@ -271,13 +326,12 @@ export class Stream {
       this.#current = set;
 
       await set.start(this.#icecast.sourceUrl);
-      this.#logger.info({ proxy: set.lastProxy }, 'starting streamlink');
       set.ttlWatcher.watch(youtubeUrl);
 
       this.#updateMetadata(youtubeUrl);
       this.#events.emit(Event.streamStarted, { url: youtubeUrl });
     } catch (err) {
-      this.#logger.error({ err: err.message }, 'failed to start stream');
+      this.#logger.error({ err: err.message, proxy: this.#current?.lastProxy ?? null }, 'failed to start stream');
       const failed = this.#current;
       await this.#stopPipeline(failed, 'start-failed');
       this.#current = null;
@@ -291,7 +345,7 @@ export class Stream {
       return;
     }
     const set = this.#current;
-    // Keep the stopped set as `#current` so /health can report the last state.
+    // #stopPipeline nulls #current on the emit; /health falls back to #lastUrl.
     await this.#stopPipeline(set, 'manual');
   }
 

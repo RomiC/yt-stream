@@ -8,7 +8,6 @@ let Streamlink;
 function makeConfig(overrides = {}) {
   return {
     streamlinkQuality: 'audio_only,worst',
-    proxyList: [],
     ...overrides
   };
 }
@@ -30,7 +29,7 @@ describe('Streamlink', () => {
     assert.equal(streamlink.command, 'streamlink');
   });
 
-  test('spawns streamlink with default-stream, retry and output args (no proxy)', async () => {
+  test('spawns streamlink with default-stream and output args (no proxy)', async () => {
     spawnCalls.length = 0;
     const streamlink = new Streamlink(makeConfig());
 
@@ -41,8 +40,6 @@ describe('Streamlink', () => {
     assert.deepEqual(spawnCalls[0].args, [
       '--default-stream',
       'audio_only,worst',
-      '--retry-open',
-      '3',
       '--output',
       '-',
       'https://youtube.com/watch?v=abc'
@@ -50,18 +47,16 @@ describe('Streamlink', () => {
     assert.deepEqual(spawnCalls[0].stdio, ['ignore', 'pipe', 'pipe']);
   });
 
-  test('picks a proxy from config.proxyList and adds --http-proxy', async () => {
+  test('spawns through the caller-chosen proxy', async () => {
     spawnCalls.length = 0;
-    const proxies = ['http://user:pass@proxy1:3128', 'http://proxy2:3128'];
-    const streamlink = new Streamlink(makeConfig({ proxyList: proxies }));
+    const streamlink = new Streamlink(makeConfig());
 
-    await streamlink.spawnProcess('https://youtube.com/watch?v=abc');
+    await streamlink.spawnProcess('https://youtube.com/watch?v=abc', 'http://user:pass@proxy:3128');
 
     const args = spawnCalls[0].args;
     const proxyIndex = args.indexOf('--http-proxy');
     assert.notEqual(proxyIndex, -1);
-    assert.ok(proxies.includes(args[proxyIndex + 1]));
-    assert.ok(['http://proxy1:3128', 'http://proxy2:3128'].includes(streamlink.lastProxy));
+    assert.equal(args[proxyIndex + 1], 'http://user:pass@proxy:3128');
   });
 
   test('stderr flows into the exit payload', async () => {
