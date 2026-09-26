@@ -57,18 +57,17 @@ export function flushAsync() {
 }
 
 /**
- * Test double for the ChildProcess base class contract (spawn/kill/proc
- * tracking, stderr tail, onExit notification with killed-proc suppression).
- * Used when testing Ffmpeg/Streamlink so the parent class can be mocked
- * instead of node:child_process. Records every spawn call into `spawnCalls`.
+ * Test double for the ChildProcess contract (one process per instance,
+ * sync spawn, liveness). Used when testing Ffmpeg/Streamlink so the parent
+ * class can be mocked instead of spawning the real binaries; the base itself
+ * is tested for real in childProcessNew.test.js. Records every spawn call
+ * into `spawnCalls`.
  */
 export function createFakeChildProcessBase({ spawnCalls }) {
   return class FakeChildProcess {
     _cmd;
-    _sigkillDelayMs;
+    _spawned = false;
     _proc = null;
-    _errors = new WeakMap();
-    _killedProcs = new WeakSet();
     _exitCallbacks = [];
 
     constructor({ cmd, sigkillDelayMs = 5_000 }) {
@@ -80,32 +79,19 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       this._exitCallbacks.push(callback);
     }
 
-    async spawn(args, stdio) {
-      if (this._proc) {
-        await this.kill();
+    spawn(args, stdio) {
+      if (this._spawned) {
+        throw new Error(`${this._cmd} instance already spawned — spawn a new instance instead`);
       }
+      this._spawned = true;
 
       const proc = createFakeChildProcess();
       spawnCalls.push({ cmd: this._cmd, args, stdio });
       this._proc = proc;
-      this._errors.set(proc, '');
 
-      proc.stderr?.on('data', (data) => {
-        const text = data.toString();
-        this._errors.set(proc, this._errors.get(proc) + text);
-      });
-      proc.on('error', (err) => {
-        this._errors.set(proc, (this._errors.get(proc) ?? '') + err.message);
-      });
       proc.on('close', (code, signal) => {
-        if (this._proc === proc) {
-          this._proc = null;
-        }
-        if (this._killedProcs.has(proc)) {
-          this._killedProcs.delete(proc);
-          return;
-        }
-        const exit = { code, signal, pid: proc.pid, errors: this._errors.get(proc) ?? '' };
+        this._proc = null;
+        const exit = { cmd: this._cmd, code, signal, pid: proc.pid, errors: '' };
         for (const callback of this._exitCallbacks) {
           callback(exit);
         }
@@ -119,21 +105,9 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       if (!proc) {
         return Promise.resolve(false);
       }
-      this._proc = null;
-      // Must precede the close event: the proc is about to die because of us,
-      // so its close must not reach the bus.
-      this._killedProcs.add(proc);
 
       return new Promise((resolve) => {
-        if (proc.exitCode !== null) {
-          resolve(true);
-          return;
-        }
-        const timer = setTimeout(() => {
-          if (proc.exitCode === null) {
-            proc.kill('SIGKILL');
-          }
-        }, this._sigkillDelayMs);
+        const timer = setTimeout(() => proc.kill('SIGKILL'), this._sigkillDelayMs);
         proc.once('close', () => {
           clearTimeout(timer);
           resolve(true);
@@ -146,8 +120,8 @@ export function createFakeChildProcessBase({ spawnCalls }) {
       return this._proc;
     }
 
-    get command() {
-      return this._cmd;
+    get pid() {
+      return this._proc?.pid ?? null;
     }
 
     isAlive() {

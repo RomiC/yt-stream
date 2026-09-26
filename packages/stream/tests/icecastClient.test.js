@@ -1,9 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Icecast, IcecastUnreachableError } from '../src/icecast.js';
+import { IcecastClient, IcecastUnreachableError } from '../src/icecastClient.js';
 import { silentLogger } from './helpers.js';
 
-describe('Icecast', () => {
+describe('IcecastClient', () => {
   function makeConfig(overrides = {}) {
     return {
       icecast: {
@@ -19,7 +19,7 @@ describe('Icecast', () => {
 
   function makeIcecast(overrides = {}, timeouts = {}) {
     const config = makeConfig(overrides);
-    return new Icecast({
+    return new IcecastClient({
       host: config.icecast.host,
       port: config.icecast.port,
       sourcePassword: config.icecast.sourcePassword,

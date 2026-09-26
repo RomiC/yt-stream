@@ -3,119 +3,133 @@ import { spawn } from 'node:child_process';
 const SIGKILL_AFTER_MS = 5_000;
 
 /**
- * Base class for wrappers that own a single child process (streamlink,
- * ffmpeg). Provides spawn tracking, SIGTERM→SIGKILL kill that resolves once
- * the process has exited, and full stderr capture. It does not log — facts
- * flow out through the exit payload; the owner logs.
- *
- * Subclasses call spawn() with their args/stdio; unexpected exits are
- * reported to onExit subscribers so the owner can react.
+ * @typedef {object} ProcessExit
+ * @property {string} cmd - the command that was run
+ * @property {number|null} code - exit code; null when terminated by a signal
+ * @property {string|null} signal - termination signal; null for a plain exit
+ * @property {number} pid - the process id, preserved past exit
+ * @property {string} errors - accumulated stderr and spawn/kill error messages
+ */
+
+/**
+ * One-shot process wrapper: the instance mirrors exactly one child process — constructed, spawned once, running, exited (terminal).
+ * No replacement: a new process is a new instance.
+ * Owner kills stay silent; every other exit reaches onExit subscribers with the full stderr tail.
  */
 export class ChildProcess {
   #cmd;
   #sigkillDelayMs;
   #proc = null;
-  #errors = new WeakMap();
-  // Processes we killed ourselves; their close is not news (an
-  // intentional stop is not an unexpected exit).
-  #killedProcs = new WeakSet();
+  #pid = null;
+  #spawned = false;
+  #exited = false;
+  #isKilledByOwner = false;
+  #errors = '';
   #exitCallbacks = [];
 
+  /**
+   * @param {{cmd: string, sigkillDelayMs?: number}} options - command to run and the SIGKILL grace period for kill()
+   */
   constructor({ cmd, sigkillDelayMs = SIGKILL_AFTER_MS }) {
     this.#cmd = cmd;
     this.#sigkillDelayMs = sigkillDelayMs;
   }
 
+  /** @returns {import('node:child_process').ChildProcess|null} the live process; null before spawn and after exit */
+  get process() {
+    return this.#proc;
+  }
+
+  /** @returns {number|null} preserved past exit, so post-mortem facts can name it */
+  get pid() {
+    return this.#pid;
+  }
+
+  /** @returns {boolean} true between a successful spawn and the process close */
+  isAlive() {
+    return this.#spawned && !this.#exited;
+  }
+
   /**
-   * Spawns the command, replacing any previous process, and attaches
-   * stderr/error/close handling. Resolves once the previous process (if any)
-   * has fully exited.
+   * Spawns the single process this instance represents.
+   * @param {string[]} args - command arguments
+   * @param {string[]} stdio - child stdio configuration (e.g. ['ignore', 'pipe', 'pipe'])
+   * @returns {ChildProcess} this instance, for chaining
+   * @throws {Error} on a second spawn — a new process is a new instance
    */
-  async spawn(args, stdio) {
-    if (this.#proc) {
-      await this.kill();
+  spawn(args, stdio) {
+    if (this.#spawned) {
+      throw new Error(`${this.#cmd} instance already spawned — spawn a new instance instead`);
     }
+    this.#spawned = true;
 
     const proc = spawn(this.#cmd, args, { stdio });
     this.#proc = proc;
-    this.#errors.set(proc, '');
+    this.#pid = proc.pid;
 
     proc.stderr?.on('data', (data) => {
-      const text = data.toString();
-      this.#errors.set(proc, this.#errors.get(proc) + text);
+      this.#errors += data.toString();
     });
     proc.on('error', (err) => {
-      this.#errors.set(proc, (this.#errors.get(proc) ?? '') + err.message);
+      this.#errors += err.message;
     });
     proc.on('close', (code, signal) => {
-      if (this.#proc === proc) {
-        this.#proc = null;
-      }
-      if (this.#killedProcs.has(proc)) {
-        this.#killedProcs.delete(proc);
+      this.#exited = true;
+      this.#proc = null;
+      if (this.#isKilledByOwner) {
         return;
       }
-      const exit = { code, signal, pid: proc.pid, errors: this.#errors.get(proc) ?? '' };
+      const exit = { cmd: this.#cmd, code, signal, pid: this.#pid, errors: this.#errors };
       for (const callback of this.#exitCallbacks) {
         callback(exit);
       }
     });
 
-    return proc;
+    return this;
   }
 
   /**
-   * SIGTERM, then SIGKILL if it hasn't exited within the grace period.
-   * Resolves once the process has fully exited, or false when idle.
+   * SIGTERM, then SIGKILL after the grace period.
+   * Resolves on close (never on the earlier exit), so a resolved kill implies drained stdio.
+   * @returns {Promise<boolean>} true once the process has closed; false when it was never running
    */
-  kill() {
+  async kill() {
     const proc = this.#proc;
+
     if (!proc) {
       return Promise.resolve(false);
     }
-    this.#proc = null;
-    // Must precede the close event: the proc is about to die because of us,
-    // so its close must not be reported as an unexpected exit.
-    this.#killedProcs.add(proc);
+
+    this.#isKilledByOwner = true;
 
     return new Promise((resolve) => {
-      if (proc.exitCode !== null) {
-        resolve(true);
-        return;
+      proc.once('close', () => resolve(true));
+      if (proc.exitCode === null) {
+        const timer = setTimeout(() => {
+          if (proc.exitCode === null) {
+            proc.kill('SIGKILL');
+          }
+        }, this.#sigkillDelayMs);
+        proc.once('close', () => clearTimeout(timer));
+        proc.kill('SIGTERM');
       }
-      const timer = setTimeout(() => {
-        if (proc.exitCode === null) {
-          proc.kill('SIGKILL');
-        }
-      }, this.#sigkillDelayMs);
-      proc.once('close', () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-      proc.kill('SIGTERM');
     });
   }
 
-  get process() {
-    return this.#proc;
-  }
-
-  get command() {
-    return this.#cmd;
-  }
-
-  /** Subscribes to unexpected exits (deliberate kills stay silent). */
+  /**
+   * Subscribes to the exit of a process the owner did not kill (owner kills stay silent).
+   * @param {(exit: ProcessExit) => void} callback
+   * @returns {ChildProcess} this instance, for chaining
+   */
   onExit(callback) {
     this.#exitCallbacks.push(callback);
-  }
-
-  isAlive() {
-    return Boolean(this.#proc);
+    return this;
   }
 
   /**
-   * Pipes this process's stdout into another ChildProcess's stdin
-   * (e.g. streamlink → ffmpeg).
+   * Pipes this process's stdout into another running instance's stdin.
+   * @param {ChildProcess} target - the consumer of this process's output
+   * @returns {ChildProcess} the target, for chaining
    */
   pipe(target) {
     this.#proc.stdout.pipe(target.#proc.stdin);

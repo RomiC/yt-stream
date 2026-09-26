@@ -17,17 +17,17 @@ describe('Routes', () => {
   }
 
   function makeDeps(overrides = {}) {
-    const streamService = {
+    const stream = {
       start: async () => {},
       stop: async () => {},
       getStatus: async () => idleStatus(),
       streamUrl: 'https://yts.example.com/stream'
     };
-    const serviceState = {
+    const statusReport = {
       getStatus: async () => ({ ...idleStatus(), general: { ...idleStatus().general, health: 'ok' } })
     };
 
-    return { streamService, serviceState, ...overrides };
+    return { stream, statusReport, ...overrides };
   }
 
   async function buildApp(deps = makeDeps()) {
@@ -42,7 +42,7 @@ describe('Routes', () => {
     test('GET /stream with url starts a stream and 302s to the audio mount', async () => {
       const deps = makeDeps();
       const start = mock.fn(async () => {});
-      deps.streamService.start = start;
+      deps.stream.start = start;
       const app = await buildApp(deps);
 
       const res = await app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
@@ -74,7 +74,7 @@ describe('Routes', () => {
       const gate = new Promise((resolve) => {
         release = resolve;
       });
-      deps.streamService.start = async () => gate;
+      deps.stream.start = async () => gate;
       const app = await buildApp(deps);
 
       const first = app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
@@ -89,7 +89,7 @@ describe('Routes', () => {
 
     test('start failure returns 500 with details', async () => {
       const deps = makeDeps();
-      deps.streamService.start = async () => {
+      deps.stream.start = async () => {
         throw new Error('boom');
       };
       const app = await buildApp(deps);
@@ -103,8 +103,8 @@ describe('Routes', () => {
     test('DELETE /stream stops the active stream', async () => {
       const deps = makeDeps();
       const stop = mock.fn(async () => {});
-      deps.streamService.getStatus = async () => ({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
-      deps.streamService.stop = stop;
+      deps.stream.getStatus = async () => ({ ...idleStatus(), general: { state: 'streaming', url: VALID_URL } });
+      deps.stream.stop = stop;
       const app = await buildApp(deps);
 
       const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
@@ -127,7 +127,7 @@ describe('Routes', () => {
       const gate = new Promise((resolve) => {
         release = resolve;
       });
-      deps.streamService.getStatus = async () => gate;
+      deps.stream.getStatus = async () => gate;
       const app = await buildApp(deps);
 
       const first = app.inject({ method: 'DELETE', url: '/api/stream' });
@@ -142,7 +142,7 @@ describe('Routes', () => {
 
     test('DELETE /stream after a stopped stream returns 404', async () => {
       const deps = makeDeps();
-      deps.streamService.getStatus = async () => ({ ...idleStatus(), general: { state: 'stopped', url: VALID_URL } });
+      deps.stream.getStatus = async () => ({ ...idleStatus(), general: { state: 'stopped', url: VALID_URL } });
       const app = await buildApp(deps);
 
       const res = await app.inject({ method: 'DELETE', url: '/api/stream' });
@@ -156,7 +156,7 @@ describe('Routes', () => {
       const gate = new Promise((resolve) => {
         release = resolve;
       });
-      deps.streamService.start = async () => gate;
+      deps.stream.start = async () => gate;
       const app = await buildApp(deps);
 
       const first = app.inject({ method: 'GET', url: `/api/stream?url=${encodeURIComponent(VALID_URL)}` });
@@ -182,7 +182,7 @@ describe('Routes', () => {
 
     test('GET /api/state returns 503 when the verdict is failure', async () => {
       const deps = makeDeps();
-      deps.serviceState.getStatus = async () => ({
+      deps.statusReport.getStatus = async () => ({
         ...idleStatus(),
         general: { state: 'idle', url: null, health: 'failure' }
       });
@@ -202,7 +202,7 @@ describe('Routes', () => {
         general: { state: 'streaming', url: VALID_URL, health: 'ok' }
       };
       const deps = makeDeps();
-      deps.serviceState.getStatus = async () => payload;
+      deps.statusReport.getStatus = async () => payload;
       const app = await buildApp(deps);
 
       const res = await app.inject({ method: 'GET', url: '/api/state' });

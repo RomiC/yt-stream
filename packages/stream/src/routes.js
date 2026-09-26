@@ -5,17 +5,17 @@ import { isValidYoutubeUrl } from './utils/isValidYoutubeUrl.js';
  *
  * @param {import('fastify').FastifyInstance} app - The Fastify instance.
  * @param {Object} options - The options object.
- * @param {import('./stream.js').Stream} options.streamService - The stream service instance.
- * @param {import('./serviceState.js').ServiceState} options.serviceState - The service state instance.
+ * @param {import('./stream.js').Stream} options.stream - The stream service instance.
+ * @param {import('./statusReport.js').StatusReport} options.statusReport - The status report instance.
  */
 export function registerRoutes(app, options) {
-  const { streamService, serviceState } = options;
+  const { stream, statusReport } = options;
   let requestInProgress = false;
 
   // --- GET /api/state -------------------------------------------------------
 
   app.get('/api/state', async (_, reply) => {
-    const state = await serviceState.getStatus();
+    const state = await statusReport.getStatus();
     reply.code(state.general.health === 'ok' ? 200 : 503);
     return state;
   });
@@ -43,7 +43,7 @@ export function registerRoutes(app, options) {
 
     requestInProgress = true;
     try {
-      await streamService.start(url);
+      await stream.start(url);
       reply.redirect('/stream');
       return;
     } catch (err) {
@@ -64,14 +64,14 @@ export function registerRoutes(app, options) {
 
     requestInProgress = true;
     try {
-      const status = await streamService.getStatus();
+      const status = await stream.getStatus();
 
       if (status.general.state === 'idle' || status.general.state === 'stopped') {
         reply.code(404);
         return { error: 'No active stream' };
       }
 
-      await streamService.stop();
+      await stream.stop();
       return {
         state: 'stopped',
         youtube_url: status.general.url
