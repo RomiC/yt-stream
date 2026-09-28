@@ -12,8 +12,29 @@ services:
       - 8089
     environment:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://localhost}"
+    # Caddy has no conditional TLS (`tls` is never optional; importing a missing file
+    # errors), so the snippet is chosen once at start — always written, so `import` never dangles.
+    command: >-
+      sh -c "if [ -s /certs/fullchain.pem ] && [ -s /certs/privkey.pem ]; then
+               echo 'tls /certs/fullchain.pem /certs/privkey.pem' > /etc/caddy/tls.caddy;
+             else
+               echo '# no client-provided certs — automatic HTTPS' > /etc/caddy/tls.caddy;
+             fi
+             exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"
     volumes:
       - ./packages/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - type: bind
+        source: "${TLS_CERT_FILE:-./packages/caddy/cert-placeholder.pem}"
+        target: /certs/fullchain.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${TLS_KEY_FILE:-./packages/caddy/cert-placeholder.pem}"
+        target: /certs/privkey.pem
+        read_only: true
+        bind:
+          create_host_path: false
       - caddy-data:/data
       - caddy-config:/config
     restart: unless-stopped
