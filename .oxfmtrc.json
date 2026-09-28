@@ -9,6 +9,6 @@
   "trailingComma": "none",
   "useTabs": false,
   "sortPackageJson": false,
-  "ignorePatterns": ["dist", "**/*.md"],
+  "ignorePatterns": ["dist"],
   "overrides": [{ "files": ["**/*.{yml,yaml}"], "options": { "singleQuote": false } }]
 }
