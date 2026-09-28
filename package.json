@@ -14,11 +14,11 @@
     "lint:fix:health": "npm run lint:fix --workspace=packages/health",
     "lint:fix:shared": "npm run lint:fix --workspace=packages/shared",
     "lint:fix:stream": "npm run lint:fix --workspace=packages/stream",
-    "format": "npm run format --workspaces",
+    "format": "oxfmt",
     "format:health": "npm run format --workspace=packages/health",
     "format:shared": "npm run format --workspace=packages/shared",
     "format:stream": "npm run format --workspace=packages/stream",
-    "format:check": "npm run format:check --workspaces",
+    "format:check": "oxfmt --check",
     "format:check:health": "npm run format:check --workspace=packages/health",
     "format:check:shared": "npm run format:check --workspace=packages/shared",
     "format:check:stream": "npm run format:check --workspace=packages/stream"

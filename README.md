@@ -27,35 +27,48 @@ A separate `shared` package holds the configuration common to both Node services
 ## Quickstart
 
 1. Create (or copy from example) `.env`
+
 ```bash
 cp .env.example .env
 ```
+
 2. Create the proxy list (mounted into the stream container; must exist before start — see [Proxies](#proxies)). The template ships example entries — **edit it before starting**: paste your own proxies, or empty it (`[]`) to connect directly
+
 ```bash
 cp proxy.json.example proxy.json
 ```
+
 3. Set `API_KEY` to protect `/api/stream` endpoints
+
 ```
 # editing .env
 API_KEY=<random-api-key-string>
 ```
+
 4. Start the service
+
 ```bash
 docker compose up -d --build
 ```
+
 5. Wait for the stack to come up, then check health:
+
 ```bash
 curl http://localhost:8080/hc
 # {"caddy":{"result":"ok",...},"icecast":{"result":"ok",...},"stream":{"result":"ok",...}}
 ```
+
 6. Start a stream (substitute `<your-api-key>` with API key set in `.env`)
+
 ```bash
 curl -H "Authorization: Bearer <your-api-key>" \
   "http://localhost/api/stream?url=https://www.youtube.com/watch?v=<id>"
 # 302 Found — Location: /stream
 ```
+
 7. Open `http://localhost/stream` in VLC, a browser, or any radio client.
 8. [Optional] Stop it manually (substitute `<your-api-key>` with API key set in `.env`):
+
 ```bash
 curl -X DELETE -H "Authorization: Bearer <your-api-key>" http://localhost/api/stream
 ```
@@ -84,6 +97,7 @@ YouTube aggressively blocks requests from datacenter/VPS IP ranges. If the servi
   `socks5h://` resolves DNS at the proxy exit — prefer it over `socks5://` (local DNS) for residential providers.
 
   `PROXY_FILE` in `.env` points at this file **on the host** (default `./proxy.json`); compose mounts it read-only into the stream container at the fixed path `/app/proxy.json` — the only path the app reads. Local dev outside Docker therefore always connects directly. The file must exist before `docker compose up` — compose fails fast when it is missing (start from the template: `cp proxy.json.example proxy.json`). At runtime the file is optional and never blocks startup: missing, malformed, or without valid entries → a single startup warning, and streamlink connects directly.
+
 - Each start begins at a **random** list entry and its retry attempts (up to 3) advance to the **next** entry — a failed proxy is never retried through itself until the list wraps. The chosen proxy is logged (redacted) per attempt. Duplicate entries collapse at load; an empty list (`[]`) connects directly.
 
 ## API
@@ -104,21 +118,21 @@ Status codes for `GET /api/stream`: `302` success (redirect), `400` missing/inva
 
 Everything is configured via environment variables (see `.env.example`):
 
-| Variable                  | Default            | Description                                                                           |
-| ------------------------- | ------------------ | ------------------------------------------------------------------------------------- |
-| `PUBLIC_BASE_URL`         | `http://localhost` | Public base URL — Caddy site address (`https://…` enables auto-HTTPS) and stream URLs |
-| `HTTP_PORT`               | `80`               | Host port → Caddy HTTP                                                                |
-| `HTTPS_PORT`              | `443`              | Host port → Caddy HTTPS                                                               |
-| `HEALTH_PORT`             | `8080`             | Host port → health service                                                            |
-| `API_KEY`                 | `dev-api-key`      | API key for `/api/*` (dev fallback logs a startup warning)                            |
-| `ALLOW_KEY_IN_QUERY`      | `false`            | Allow `?key=` query auth (can leak into logs/history — keep off)                      |
-| `ICECAST_SOURCE_PASSWORD` | `secret`           | Source auth (ffmpeg → Icecast)                                                        |
-| `ICECAST_ADMIN_PASSWORD`  | `admin`            | Admin API auth (internal polling; also used by the health probe)                      |
-| `ICECAST_MAX_LISTENERS`   | `2`                | Per-mount listener cap, enforced by Icecast alone                                     |
-| `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N minutes with zero listeners                                         |
+| Variable                  | Default            | Description                                                                                |
+| ------------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| `PUBLIC_BASE_URL`         | `http://localhost` | Public base URL — Caddy site address (`https://…` enables auto-HTTPS) and stream URLs      |
+| `HTTP_PORT`               | `80`               | Host port → Caddy HTTP                                                                     |
+| `HTTPS_PORT`              | `443`              | Host port → Caddy HTTPS                                                                    |
+| `HEALTH_PORT`             | `8080`             | Host port → health service                                                                 |
+| `API_KEY`                 | `dev-api-key`      | API key for `/api/*` (dev fallback logs a startup warning)                                 |
+| `ALLOW_KEY_IN_QUERY`      | `false`            | Allow `?key=` query auth (can leak into logs/history — keep off)                           |
+| `ICECAST_SOURCE_PASSWORD` | `secret`           | Source auth (ffmpeg → Icecast)                                                             |
+| `ICECAST_ADMIN_PASSWORD`  | `admin`            | Admin API auth (internal polling; also used by the health probe)                           |
+| `ICECAST_MAX_LISTENERS`   | `2`                | Per-mount listener cap, enforced by Icecast alone                                          |
+| `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N minutes with zero listeners                                              |
 | `PROXY_FILE`              | `./proxy.json`     | **Host** path to the proxy list; mounted read-only into the container as `/app/proxy.json` |
-| `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink quality priority list                                                      |
-| `LOG_LEVEL`               | `info`             | pino log level                                                                        |
+| `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink quality priority list                                                           |
+| `LOG_LEVEL`               | `info`             | pino log level                                                                             |
 
 Container-internal ports are fixed and not configurable — see [DESIGN.md](DESIGN.md).
 
