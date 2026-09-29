@@ -1,27 +1,28 @@
 {
   "name": "yt-stream",
   "private": true,
+  "packageManager": "bun@1.4.2",
   "scripts": {
-    "test": "npm run test --workspaces",
-    "test:health": "npm run test --workspace=packages/health",
-    "test:shared": "npm run test --workspace=packages/shared",
-    "test:stream": "npm run test --workspace=packages/stream",
-    "lint": "npm run lint --workspaces",
-    "lint:health": "npm run lint --workspace=packages/health",
-    "lint:shared": "npm run lint --workspace=packages/shared",
-    "lint:stream": "npm run lint --workspace=packages/stream",
-    "lint:fix": "npm run lint:fix --workspaces",
-    "lint:fix:health": "npm run lint:fix --workspace=packages/health",
-    "lint:fix:shared": "npm run lint:fix --workspace=packages/shared",
-    "lint:fix:stream": "npm run lint:fix --workspace=packages/stream",
+    "test": "bun run --workspaces test",
+    "test:health": "bun run --filter yt-stream-health test",
+    "test:shared": "bun run --filter yt-stream-shared test",
+    "test:stream": "bun run --filter yt-stream-stream test",
+    "lint": "bun run --workspaces lint",
+    "lint:health": "bun run --filter yt-stream-health lint",
+    "lint:shared": "bun run --filter yt-stream-shared lint",
+    "lint:stream": "bun run --filter yt-stream-stream lint",
+    "lint:fix": "bun run --workspaces lint:fix",
+    "lint:fix:health": "bun run --filter yt-stream-health lint:fix",
+    "lint:fix:shared": "bun run --filter yt-stream-shared lint:fix",
+    "lint:fix:stream": "bun run --filter yt-stream-stream lint:fix",
     "format": "oxfmt",
-    "format:health": "npm run format --workspace=packages/health",
-    "format:shared": "npm run format --workspace=packages/shared",
-    "format:stream": "npm run format --workspace=packages/stream",
+    "format:health": "bun run --filter yt-stream-health format",
+    "format:shared": "bun run --filter yt-stream-shared format",
+    "format:stream": "bun run --filter yt-stream-stream format",
     "format:check": "oxfmt --check",
-    "format:check:health": "npm run format:check --workspace=packages/health",
-    "format:check:shared": "npm run format:check --workspace=packages/shared",
-    "format:check:stream": "npm run format:check --workspace=packages/stream"
+    "format:check:health": "bun run --filter yt-stream-health format:check",
+    "format:check:shared": "bun run --filter yt-stream-shared format:check",
+    "format:check:stream": "bun run --filter yt-stream-stream format:check"
   },
   "homepage": "https://github.com/RomiC/yt-stream#readme",
   "bugs": {
@@ -42,8 +43,10 @@
     "fastify": "5.12.1"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.2",
     "@types/node": "24.13.5",
     "oxfmt": "0.71.0",
-    "oxlint": "1.86.0"
+    "oxlint": "1.86.0",
+    "typescript": "^7.0.2"
   }
 }

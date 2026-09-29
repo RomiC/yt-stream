@@ -1,5 +1,6 @@
 import { describe, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mock as bunMock } from 'bun:test';
 import { createFakeChildProcessBase } from './helpers.js';
 
 let spawnCalls = [];
@@ -12,14 +13,12 @@ function makeConfig(overrides = {}) {
   };
 }
 
-before(async (ctx) => {
+before(async () => {
   spawnCalls = [];
   // Mock our own ChildProcess base class (a collaborator of Streamlink)
   // rather than spawning the real binary; the base is tested for real in
   // childProcessNew.test.js.
-  ctx.mock.module('../src/childProcess.js', {
-    exports: { ChildProcess: createFakeChildProcessBase({ spawnCalls }) }
-  });
+  bunMock.module('../src/childProcess.js', () => ({ ChildProcess: createFakeChildProcessBase({ spawnCalls }) }));
   ({ Streamlink } = await import('../src/streamlink.js'));
 });
 

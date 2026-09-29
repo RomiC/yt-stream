@@ -1,5 +1,6 @@
 import { describe, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mock as bunMock } from 'bun:test';
 import { createFakeChildProcessBase } from './helpers.js';
 
 const SOURCE_URL = 'icecast://source:testsource@icecast:8000/stream';
@@ -7,14 +8,12 @@ const SOURCE_URL = 'icecast://source:testsource@icecast:8000/stream';
 let spawnCalls = [];
 let Ffmpeg;
 
-before(async (ctx) => {
+before(async () => {
   spawnCalls = [];
   // Mock our own ChildProcess base class (a collaborator of Ffmpeg) rather
   // than spawning the real binary; the base is tested for real in
   // childProcessNew.test.js.
-  ctx.mock.module('../src/childProcess.js', {
-    exports: { ChildProcess: createFakeChildProcessBase({ spawnCalls }) }
-  });
+  bunMock.module('../src/childProcess.js', () => ({ ChildProcess: createFakeChildProcessBase({ spawnCalls }) }));
   ({ Ffmpeg } = await import('../src/ffmpeg.js'));
 });
 

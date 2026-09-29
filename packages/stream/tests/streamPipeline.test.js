@@ -1,5 +1,6 @@
 import { describe, before, test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { mock as bunMock } from 'bun:test';
 import { silentLogger } from './helpers.js';
 
 const URL = 'https://youtube.com/watch?v=abc';
@@ -43,22 +44,20 @@ function fakeProxies(entries = []) {
   };
 }
 
-before(async (ctx) => {
+before(async () => {
   icecast = {
     status: { icecastReachable: true, mountpointActive: true, listeners: 0 },
     getStatus: async () => ({ ...icecast.status }),
     prepareMountPoint: mock.fn(async () => {})
   };
 
-  ctx.mock.module('../src/icecastClient.js', {
-    exports: {
-      IcecastUnreachableError: class IcecastUnreachableError extends Error {
-        constructor() {
-          super('Icecast unreachable — cannot start stream');
-        }
+  bunMock.module('../src/icecastClient.js', () => ({
+    IcecastUnreachableError: class IcecastUnreachableError extends Error {
+      constructor() {
+        super('Icecast unreachable — cannot start stream');
       }
     }
-  });
+  }));
 
   class FakeStreamlink {
     static next = null; // applies to the next constructed instance only
@@ -107,7 +106,7 @@ before(async (ctx) => {
     }
   }
   StreamlinkFake = FakeStreamlink;
-  ctx.mock.module('../src/streamlink.js', { exports: { Streamlink: StreamlinkFake } });
+  bunMock.module('../src/streamlink.js', () => ({ Streamlink: StreamlinkFake }));
 
   class FakeFfmpeg {
     static next = null;
@@ -150,30 +149,28 @@ before(async (ctx) => {
     }
   }
   FfmpegFake = FakeFfmpeg;
-  ctx.mock.module('../src/ffmpeg.js', { exports: { Ffmpeg: FfmpegFake } });
+  bunMock.module('../src/ffmpeg.js', () => ({ Ffmpeg: FfmpegFake }));
 
-  ctx.mock.module('../src/ttlWatcher.js', {
-    exports: {
-      TTLWatcher: class FakeTTLWatcher {
-        expiredCallbacks = [];
+  bunMock.module('../src/ttlWatcher.js', () => ({
+    TTLWatcher: class FakeTTLWatcher {
+      expiredCallbacks = [];
 
-        constructor() {
-          this.stops = 0;
-          ttlWatcherInstances.push(this);
-        }
+      constructor() {
+        this.stops = 0;
+        ttlWatcherInstances.push(this);
+      }
 
-        onExpired(callback) {
-          this.expiredCallbacks.push(callback);
-        }
+      onExpired(callback) {
+        this.expiredCallbacks.push(callback);
+      }
 
-        watch() {}
+      watch() {}
 
-        stop() {
-          this.stops += 1;
-        }
+      stop() {
+        this.stops += 1;
       }
     }
-  });
+  }));
 
   ({ StreamPipeline } = await import('../src/streamPipeline.js'));
 });

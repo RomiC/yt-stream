@@ -1,5 +1,6 @@
 import { describe, before, test, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mock as bunMock } from 'bun:test';
 import { EventBus, Event } from '../src/events.js';
 import { silentLogger, flushAsync, sleep } from './helpers.js';
 
@@ -28,31 +29,29 @@ function captureLogger() {
   return logger;
 }
 
-before(async (ctx) => {
-  ctx.mock.module('../src/icecastClient.js', {
-    exports: {
-      IcecastClient: class FakeIcecast {
-        constructor() {
-          this.status = { icecastReachable: true, mountpointActive: true, listeners: 0 };
-          this.setMetadata = mock.fn(() => Promise.resolve(true));
-          icecastInstances.push(this);
-        }
+before(async () => {
+  bunMock.module('../src/icecastClient.js', () => ({
+    IcecastClient: class FakeIcecast {
+      constructor() {
+        this.status = { icecastReachable: true, mountpointActive: true, listeners: 0 };
+        this.setMetadata = mock.fn(() => Promise.resolve(true));
+        icecastInstances.push(this);
+      }
 
-        async prepareMountPoint() {}
-        async getStatus() {
-          return { ...this.status };
-        }
+      async prepareMountPoint() {}
+      async getStatus() {
+        return { ...this.status };
+      }
 
-        get sourceUrl() {
-          return SOURCE_URL;
-        }
+      get sourceUrl() {
+        return SOURCE_URL;
+      }
 
-        get streamUrl() {
-          return MOUNT_URL;
-        }
+      get streamUrl() {
+        return MOUNT_URL;
       }
     }
-  });
+  }));
 
   class FakeStreamPipeline {
     static next = null; // applies to the next constructed instance only
@@ -127,13 +126,11 @@ before(async (ctx) => {
     }
   }
   StreamPipelineFake = FakeStreamPipeline;
-  ctx.mock.module('../src/streamPipeline.js', { exports: { StreamPipeline: StreamPipelineFake } });
+  bunMock.module('../src/streamPipeline.js', () => ({ StreamPipeline: StreamPipelineFake }));
 
-  ctx.mock.module('../src/utils/getYoutubeMeta.js', {
-    exports: {
-      getYoutubeMeta: getYoutubeMetaFake
-    }
-  });
+  bunMock.module('../src/utils/getYoutubeMeta.js', () => ({
+    getYoutubeMeta: getYoutubeMetaFake
+  }));
 
   ({ Stream } = await import('../src/stream.js'));
 });

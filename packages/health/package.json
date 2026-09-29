@@ -24,16 +24,13 @@
     "test": "tests"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --experimental-test-module-mocks --test 'tests/**/*.test.js'",
+    "start": "bun src/index.js",
+    "dev": "bun --watch src/index.js",
+    "test": "bun test --isolate",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check"
-  },
-  "engines": {
-    "node": ">=24"
   },
   "dependencies": {
     "@fastify/rate-limit": "11.2.0",

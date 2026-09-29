@@ -6,7 +6,7 @@ A self-hosted service that converts a YouTube live stream or video into an Iceca
 
 - **Single entry point** — the application is reachable only through Caddy (one public URL); the health monitor is the single deliberate exception, published on its own port.
 - **Convenience preserved** — a client can start and tune into a stream with a single `GET` request.
-- **Minimal dependencies** — Node built-ins where possible; only battle-tested external components (Fastify, streamlink, ffmpeg, Icecast, Caddy).
+- **Minimal dependencies** — built-ins where possible; only battle-tested external components (Fastify, streamlink, ffmpeg, Icecast, Caddy).
 - **Fail loud** — a failed start fails the HTTP request; the start-attempt rotation is logged (proxy per attempt), never hidden.
 
 ---
@@ -25,11 +25,11 @@ Four containers on one Docker network, plus a shared build context:
 ```
 
 - **caddy** — reverse proxy, the only public door. TLS when `PUBLIC_BASE_URL` is `https://…`: automatic HTTPS (Let's Encrypt) by default, or operator-provided certificates (§2); HTTP-only mode for local dev. Also exposes a static liveness route on an internal-only port.
-- **stream** — Node.js application: URL validation, the `streamlink → ffmpeg` pipeline, Icecast admin polling, TTL auto-stop, metadata push. Internal port only.
+- **stream** — Bun application: URL validation, the `streamlink → ffmpeg` pipeline, Icecast admin polling, TTL auto-stop, metadata push. Internal port only.
 - **icecast** — off-the-shelf streaming server (`moul/icecast`, digest-pinned). Single fixed mountpoint `/stream`; serves audio to listeners and an admin API to the internal network.
 - **health** — independent failure domain (#18). Probes the three components from the outside over plain HTTP and aggregates the result.
 
-### Package layout (npm workspaces)
+### Package layout (Bun workspaces)
 
 ```
 packages/
@@ -65,7 +65,7 @@ packages/
 │   └── index.js                # bootstrap
 ├── caddy/Caddyfile
 ├── icecast/icecast.xml
-└── Dockerfile.node             # shared build for stream & health (SERVICE build arg)
+└── Dockerfile.bun             # shared build for stream & health (SERVICE build arg)
 ```
 
 Tests mirror each package's `src/` tree under `tests/`.
@@ -237,7 +237,7 @@ Every application container: non-root user, read-only root filesystem (tmpfs `/t
 
 ### 7.6 CI scanning
 
-`npm audit` (gates on `critical`), gitleaks, GitHub **CodeQL** (default setup) for static analysis, **Dependabot** security updates for app-dependency CVEs, Dependabot version updates for npm and GitHub Actions.
+`bun audit` (gates on `critical`), gitleaks, GitHub **CodeQL** (default setup) for static analysis, **Dependabot** security updates for app-dependency CVEs, Dependabot version updates for Bun and GitHub Actions.
 
 > **Decision — container-image Trivy scanning was dropped:** its advisory DB re-rates CVEs over time (revisions can flip findings between CRITICAL and HIGH), making a severity gate non-deterministic. CodeQL + Dependabot give reproducible code & app-dependency coverage instead. Docker ecosystem updates are deferred until E2E tests exist to validate a base-image bump.
 
@@ -249,32 +249,32 @@ Branch protection on `main` requires PR + passing CI.
 
 All dependencies — npm packages, Docker base images, Docker service images, and system packages — are pinned to exact versions for reproducible builds. Without pinning, a rebuild months later can pull a newer dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
 
-| Layer                    | What                             | How                                                                                                     | Update cadence               |
-| ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| **npm**                  | `fastify`                        | Exact version in `package.json` (no `^`/`~`); `package-lock.json` records resolved URL + integrity hash | Dependabot (npm ecosystem)   |
-| **Docker base image**    | `node:24-alpine`                 | Pinned by digest in `Dockerfile.node`                                                                   | When bumping Node or Alpine  |
-| **Docker service image** | `moul/icecast`, `caddy:2-alpine` | Pinned by digest in `docker-compose.yml`                                                                | When bumping Icecast / Caddy |
-| **apk packages**         | `ffmpeg`, `streamlink`           | Exact version via compose build args                                                                    | When bumping any package     |
+| Layer                    | What                             | How                                                                                            | Update cadence               |
+| ------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------- |
+| **Bun**                  | `fastify`                        | Exact version in `package.json` (no `^`/`~`); `bun.lock` records resolved URL + integrity hash | Dependabot (bun ecosystem)   |
+| **Docker base image**    | `alpine:3.24`                    | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.2-alpine`        | When bumping Bun or Alpine   |
+| **Docker service image** | `moul/icecast`, `caddy:2-alpine` | Pinned by digest in `docker-compose.yml`                                                       | When bumping Icecast / Caddy |
+| **apk packages**         | `ffmpeg`, `streamlink`           | Exact version via compose build args                                                           | When bumping any package     |
 
 Resolving digests and versions:
 
 ```bash
-docker pull node:24-alpine
-docker inspect node:24-alpine --format='{{index .RepoDigests 0}}'
-docker run --rm node:24-alpine apk info -a ffmpeg streamlink
+docker pull alpine:3.24
+docker inspect alpine:3.24 --format='{{index .RepoDigests 0}}'
+docker run --rm alpine:3.24 apk info -a ffmpeg streamlink
 ```
 
 ---
 
 ## 9. Logging
 
-Every service logs to stdout/stderr → `docker logs`. The Node services use pino (JSON, level via `LOG_LEVEL`); Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
+Every service logs to stdout/stderr → `docker logs`. The Bun services use pino (JSON, level via `LOG_LEVEL`); Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
 
 ---
 
 ## 10. Testing, linting & CI
 
-- **Unit tests** — `node:test` with built-in `mock.fn()`/`mock.module` (`--experimental-test-module-mocks`), real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real `node` processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
+- **Unit tests** — `bun test` (suites on `node:test` with `mock.fn()`/`mock.method()`; module mocks via `bun:test`'s `mock.module()`), real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
 - **Linting & formatting** — `oxlint` + `oxfmt`, configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
 - **CI** — lint + format-check + tests on every PR open/update; dependency & secret scanning (§7.6); merge blocked on failure via branch protection.
 
@@ -293,7 +293,7 @@ Every service logs to stdout/stderr → `docker logs`. The Node services use pin
 | 7   | `/api/state` is key-exempt (#18)                                               | Read-only status needed by header-less probers; accepted exposure — see §7.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 8   | Internal ports fixed at 8080 (all services) + Caddy liveness on 8089           | Per-container namespaces make them collision-free; only host-published ports need configuring                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 9   | Trivy image scanning dropped from CI                                           | Advisory DB re-rates CVEs over time → non-deterministic severity gate (§7.6)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 10  | npm-workspaces monorepo, `yt-stream-shared` Config                             | Two services, one env contract — no drift between copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 10  | Bun-workspaces monorepo, `yt-stream-shared` Config                             | Two services, one env contract — no drift between copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 11  | Proxies: random pick per start, from a JSON list                               | Residential IPs are required to pass YouTube's bot checks; rotation spreads rate-limit exposure                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 12  | `PROXY_FILE` is host-side only; in-container path fixed (#35)                  | Compose mounts `${PROXY_FILE:-./proxy.json}` with `create_host_path: false` — the mount is the knob; a missing file fails `up` loudly instead of silently creating a directory; the app reads exactly `/app/proxy.json`, no cwd-relative fallback                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 13  | Start attempts rotate proxies; failures log the proxy (#35)                    | Attempts draw from a per-request shuffled rotation — a poisoned exit is never retried through itself; per-attempt redacted-proxy logs make bad exits diagnosable in one line                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
