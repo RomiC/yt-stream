@@ -214,6 +214,7 @@ packages/
 ```bash
 bun install
 bun test          # runs the suites of all workspaces
+bun run typecheck # tsc --noEmit
 bun run lint      # oxlint
 bun run format    # oxfmt
 ```

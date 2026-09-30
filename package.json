@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "bun@1.4.2",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "test": "bun run --workspaces test",
     "test:health": "bun run --filter yt-stream-health test",
     "test:shared": "bun run --filter yt-stream-shared test",

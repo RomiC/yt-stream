@@ -25,5 +25,7 @@ jobs:
         run: bun run format:check
       - name: Linting code
         run: bun run lint
+      - name: Type checking
+        run: bun run typecheck
       - name: Running tests
         run: bun run test

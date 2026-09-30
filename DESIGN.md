@@ -34,8 +34,10 @@ Four containers on one Docker network, plus a shared build context:
 ```
 packages/
 ├── shared/                     # yt-stream-shared — env Config shared by all services
-│   ├── lib/config.js           #   immutable env config (constructor takes an env object)
-│   └── index.js                #   public exports
+│   ├── lib/config.ts           #   immutable env config (constructor takes an env object)
+│   ├── lib/withRateLimit.ts    #   fixed-window limiter + withRateLimit route wrapper
+│   ├── lib/serverResponse.ts   #   JSON response helpers (404/429/500 + rate-limit headers)
+│   └── index.ts                #   public exports
 ├── stream/src/
 │   ├── events.js               # event bus + exported Event map (stream:* notifications)
 │   ├── childProcess.js         # one-shot wrapper: one instance = one process (spawn/kill/exit payload)
@@ -55,14 +57,14 @@ packages/
 │   │   └── getYoutubeMeta.js     # YouTube oEmbed metadata
 │   └── index.js                # bootstrap
 ├── health/src/
-│   ├── check.js                # base class: timed check envelope (result / duration / error)
-│   ├── streamCheck.js          # GET stream:8080/api/state
-│   ├── icecastCheck.js         # GET icecast:8080/admin/stats (basic auth)
-│   ├── caddyCheck.js           # GET caddy:8089/hc — Caddy's own liveness route
-│   ├── config.js               # check constants (timeout, rate limit)
-│   ├── app.js                  # Fastify app factory (rate limiter registered before routes)
-│   ├── routes.js               # /hc + /health aggregation
-│   └── index.js                # bootstrap
+│   ├── check.ts                # base class: timed check envelope (result / duration / error)
+│   ├── streamCheck.ts          # GET stream:8080/api/state
+│   ├── icecastCheck.ts         # GET icecast:8080/admin/stats (basic auth)
+│   ├── caddyCheck.ts           # GET caddy:8089/hc — Caddy's own liveness route
+│   ├── config.ts               # check constants (timeout, rate limit)
+│   ├── logger.ts               # minimal pino-shaped JSON logger
+│   ├── server.ts               # Bun.serve: routes /hc + /health, error handling
+│   └── index.ts                # bootstrap
 ├── caddy/Caddyfile
 ├── icecast/icecast.xml
 └── Dockerfile.bun             # shared build for stream & health (SERVICE build arg)
@@ -207,7 +209,7 @@ A dedicated `health` container is an independent failure domain: it probes the c
   - `caddy` → `GET caddy:8089/hc` (Caddy's own static liveness route, internal-only)
 - **Response:** `{ caddy, icecast, stream }`, each `{ result: 'ok' | 'error', duration, error? }`. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
 - A failing **or hanging** component never takes the monitor down: every probe wraps in try/catch with its own timeout.
-- **Rate limited** — 60 requests/minute per client (`429` beyond); the limiter is registered before the routes so both `/hc` and `/health` are covered.
+- **Rate limited** — 60 requests/minute per client (`429` beyond, with `x-ratelimit-*` headers and `retry-after`); the `withRateLimit` wrapper guards `/hc` and `/health` (unknown paths are not counted). The store is capped at 5,000 clients with least-recently-used eviction, avoiding full-map scans. Evicted clients get a fresh allowance on their next request; expired windows reset when accessed.
 - **Unauthenticated by decision** — external probers cannot send auth headers. The endpoint exposes component status only, no control surface.
 - Host-resource checks (disk/memory) were considered and **descoped**: the monitor observes service components, not the machine.
 
@@ -268,13 +270,13 @@ docker run --rm alpine:3.24 apk info -a ffmpeg streamlink
 
 ## 9. Logging
 
-Every service logs to stdout/stderr → `docker logs`. The Bun services use pino (JSON, level via `LOG_LEVEL`); Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
+Every service logs to stdout/stderr → `docker logs`. Logs are pino-shaped JSON (numeric level, `pid`/`hostname`, `msg`), level via `LOG_LEVEL`: the health monitor uses a small built-in logger, the stream service still logs through Fastify's pino until its rewrite. Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
 
 ---
 
 ## 10. Testing, linting & CI
 
-- **Unit tests** — `bun test` (suites on `node:test` with `mock.fn()`/`mock.method()`; module mocks via `bun:test`'s `mock.module()`), real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
+- **Unit tests** — `bun test`. The health and shared suites use `bun:test` directly (`server.fetch`, `spyOn`); the stream suite still runs on `node:test` (Bun shims it), with module mocks via `bun:test`'s `mock.module()`. Real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
 - **Linting & formatting** — `oxlint` + `oxfmt`, configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
 - **CI** — lint + format-check + tests on every PR open/update; dependency & secret scanning (§7.6); merge blocked on failure via branch protection.
 
