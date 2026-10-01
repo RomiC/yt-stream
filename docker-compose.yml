@@ -100,7 +100,7 @@ services:
   stream:
     build:
       context: ./
-      dockerfile: packages/Dockerfile.node
+      dockerfile: packages/Dockerfile.bun
       args:
         SERVICE: stream
         APK_PACKAGES: "ffmpeg=8.1.2-r0 streamlink=8.4.0-r0"
@@ -147,7 +147,7 @@ services:
   health:
     build:
       context: ./
-      dockerfile: packages/Dockerfile.node
+      dockerfile: packages/Dockerfile.bun
       args:
         SERVICE: health
     image: yt-stream-health:latest
@@ -176,7 +176,7 @@ services:
       resources:
         limits:
           cpus: "0.25"
-          memory: "128M"
+          memory: "64M"
 
 volumes:
   stream-data:

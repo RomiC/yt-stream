@@ -1,0 +1,37 @@
+# Bun binary staged into alpine:3.24 so the pinned ffmpeg/streamlink versions stay put
+FROM oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f AS bun
+
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+# Which workspace to build (stream | health) — set by compose build args
+ARG SERVICE
+# Optional pinned system packages (stream only), empty for health
+ARG APK_PACKAGES=""
+
+# Bun runtime: libgcc/libstdc++ for the binary, non-root `bun` user (mirrors oven/bun)
+RUN apk add --no-cache libgcc libstdc++ \
+    && addgroup -g 1000 bun \
+    && adduser -u 1000 -G bun -s /bin/sh -D bun
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
+
+# No on-disk transpiler cache — the container filesystem is read-only at runtime
+ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+
+WORKDIR /app
+RUN if [ -n "${APK_PACKAGES}" ]; then apk add --no-cache ${APK_PACKAGES} && rm -rf /var/cache/apk/*; fi
+
+COPY package.json bun.lock ./
+COPY packages/stream/package.json packages/stream/package.json
+COPY packages/health/package.json packages/health/package.json
+COPY packages/shared/package.json packages/shared/package.json
+RUN bun install --frozen-lockfile --production
+
+COPY packages/shared/ packages/shared/
+COPY packages/${SERVICE}/src/ packages/${SERVICE}/src/
+
+WORKDIR /app/packages/${SERVICE}
+USER bun
+
+EXPOSE 8080
+CMD ["bun", "src/index.ts"]

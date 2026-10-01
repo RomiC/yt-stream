@@ -19,25 +19,20 @@
   "license": "MIT",
   "author": "Roman Charugin <romic+github@fastmail.com>",
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "directories": {
     "test": "tests"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --experimental-test-module-mocks --test 'tests/**/*.test.js'",
+    "start": "bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test --isolate",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check"
   },
-  "engines": {
-    "node": ">=24"
-  },
   "dependencies": {
-    "@fastify/rate-limit": "11.2.0",
-    "fastify": "5.12.1",
     "yt-stream-shared": "1.0.0"
   }
 }

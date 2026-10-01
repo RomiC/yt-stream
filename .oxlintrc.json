@@ -1,10 +1,13 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["import"],
+  "plugins": ["import", "typescript"],
   "categories": { "correctness": "error" },
   "rules": {
     "curly": "error",
-    "id-length": ["error", { "min": 3, "exceptions": ["on", "id", "ok", "_", "__"] }],
+    "id-length": [
+      "error",
+      { "min": 3, "checkGeneric": false, "exceptions": ["on", "id", "ok", "vi", "fn", "_", "__"] }
+    ],
     "import/named": "error"
   },
   "env": { "builtin": true, "node": true }

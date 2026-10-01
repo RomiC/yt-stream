@@ -14,9 +14,10 @@
   "license": "MIT",
   "author": "Roman Charugin <romic+github@fastmail.com>",
   "type": "module",
-  "main": "index.js",
+  "main": "index.ts",
+  "types": "index.ts",
   "scripts": {
-    "test": "node --test tests/index.test.js tests/**/*.test.js",
+    "test": "bun test --isolate",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",

@@ -13,11 +13,11 @@ Architecture, design decisions, and security rationale are documented in **[DESI
 Four Docker containers behind a single public entry point:
 
 - **Caddy** — reverse proxy and the only public door (ports 80/443). Routes `/api/*` to the stream service and `/stream` to Icecast; everything else returns 404. Handles TLS — automatic HTTPS or operator-provided certificates ([details](#tls)).
-- **stream** (Node.js) — the application. Validates the URL, runs the `streamlink → ffmpeg` pipeline, pushes MP3 audio to Icecast, watches listener counts.
+- **stream** (Bun) — the application. Validates the URL, runs the `streamlink → ffmpeg` pipeline, pushes MP3 audio to Icecast, watches listener counts.
 - **Icecast** — the streaming server. Serves the audio on the `/stream` mountpoint to any number of listeners (capped by `ICECAST_MAX_LISTENERS`).
-- **health** (Node.js) — an independent monitor on its own port (`HEALTH_PORT`) that probes Caddy, Icecast, and the stream service and reports a single verdict.
+- **health** (Bun) — an independent monitor on its own port (`HEALTH_PORT`) that probes Caddy, Icecast, and the stream service and reports a single verdict.
 
-A separate `shared` package holds the configuration common to both Node services.
+A separate `shared` package holds the configuration common to both services.
 
 ## Requirements
 
@@ -196,13 +196,13 @@ Everything is configured via environment variables (see `.env.example`):
 | `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N minutes with zero listeners                                              |
 | `PROXY_FILE`              | `./proxy.json`     | **Host** path to the proxy list; mounted read-only into the container as `/app/proxy.json` |
 | `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink quality priority list                                                           |
-| `LOG_LEVEL`               | `info`             | pino log level                                                                             |
+| `LOG_LEVEL`               | `info`             | log level — one of `debug`, `info`, `warn`, `error`, `fatal`                               |
 
 Container-internal ports are fixed and not configurable — see [DESIGN.md](DESIGN.md).
 
 ## Development
 
-npm-workspaces monorepo:
+Bun workspaces monorepo:
 
 ```
 packages/
@@ -212,13 +212,14 @@ packages/
 ```
 
 ```bash
-npm install
-npm test          # node:test suites for all workspaces
-npm run lint      # oxlint
-npm run format    # oxfmt
+bun install
+bun test          # runs the suites of all workspaces
+bun run typecheck # tsc --noEmit
+bun run lint      # oxlint
+bun run format    # oxfmt
 ```
 
-Per-workspace variants: `npm run test:stream`, `npm run lint:health`, etc.
+Per-workspace variants: `bun run test:stream`, `bun run lint:health`, etc.
 
 ## License
 

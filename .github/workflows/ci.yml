@@ -15,18 +15,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-      - name: Configuring NodeJS environment
-        uses: actions/setup-node@v7.0.0
-        with:
-          node-version: 24
-          cache: npm
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
       - name: Installing dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: Running audit
-        run: npm audit --audit-level critical
+        run: bun audit --audit-level critical
       - name: Checking formatting
-        run: npm run format:check
+        run: bun run format:check
       - name: Linting code
-        run: npm run lint
+        run: bun run lint
+      - name: Type checking
+        run: bun run typecheck
       - name: Running tests
-        run: npm test
+        run: bun run test

@@ -1,4 +1,4 @@
-# Build context is the repo root; the shared Node Dockerfile needs only
+# Build context is the repo root; the shared Bun Dockerfile needs only
 # root manifests, the lockfile and package sources.
 .git
 .github
@@ -11,7 +11,7 @@ docs
 *.log
 data
 .env*
-jsconfig.json
+tsconfig.json
 .oxfmtrc.json
 .oxlintrc.json
 proxy.json
