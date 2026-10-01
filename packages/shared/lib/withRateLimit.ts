@@ -1,4 +1,5 @@
 import { ServerResponse } from './serverResponse';
+import type { RequestHandler } from './types';
 
 export interface RateLimitCheckResult {
   limit: number;
@@ -16,8 +17,6 @@ interface WindowEntry {
   count: number;
   startMs: number;
 }
-
-type RequestHandler = (request: Request, server: Bun.Server<undefined>) => Response | Promise<Response>;
 
 const MAX_TRACKED_KEYS = 5_000;
 

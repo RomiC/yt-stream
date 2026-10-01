@@ -6,7 +6,7 @@ A self-hosted service that converts a YouTube live stream or video into an Iceca
 
 - **Single entry point** — the application is reachable only through Caddy (one public URL); the health monitor is the single deliberate exception, published on its own port.
 - **Convenience preserved** — a client can start and tune into a stream with a single `GET` request.
-- **Minimal dependencies** — built-ins where possible; only battle-tested external components (Fastify, streamlink, ffmpeg, Icecast, Caddy).
+- **Minimal dependencies** — built-ins where possible; only battle-tested external components (streamlink, ffmpeg, Icecast, Caddy).
 - **Fail loud** — a failed start fails the HTTP request; the start-attempt rotation is logged (proxy per attempt), never hidden.
 
 ---
@@ -33,36 +33,41 @@ Four containers on one Docker network, plus a shared build context:
 
 ```
 packages/
-├── shared/                     # yt-stream-shared — env Config shared by all services
+├── shared/                     # yt-stream-shared — env Config + shared helpers
 │   ├── lib/config.ts           #   immutable env config (constructor takes an env object)
+│   ├── lib/logger.ts           #   pino-shaped JSON logger (both call forms)
 │   ├── lib/withRateLimit.ts    #   fixed-window limiter + withRateLimit route wrapper
 │   ├── lib/serverResponse.ts   #   JSON response helpers (404/429/500 + rate-limit headers)
+│   ├── lib/types.ts            #   shared types (RequestHandler)
 │   └── index.ts                #   public exports
 ├── stream/src/
-│   ├── events.js               # event bus + exported Event map (stream:* notifications)
-│   ├── childProcess.js         # one-shot wrapper: one instance = one process (spawn/kill/exit payload)
-│   ├── streamlink.js           # streamlink process: fetch the stream
-│   ├── proxyList.js            # ProxyList entity: optional file → pool (warn+degrade), request-scoped rotation
-│   ├── ffmpeg.js               # ffmpeg process: transcode stdin → Icecast output URL
-│   ├── icecastClient.js        # Icecast admin-API client: getStatus, sourceUrl, streamUrl, mount-clear readiness
-│   ├── statusReport.js         # /api/state snapshot + ok/failure verdict
-│   ├── streamPipeline.js       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
-│   ├── stream.js               # orchestration: replace/stop pipelines, event accounting, health snapshot
-│   ├── ttlWatcher.js           # zero-listener TTL: polls Icecast, notifies owner via onExpired
-│   ├── auth.js                 # API key validation (Fastify hook; exempts /api/state)
-│   ├── routes.js               # HTTP handlers
+│   ├── events.ts               # event bus + exported Event map (stream:* notifications)
+│   ├── childProcess.ts         # one-shot wrapper: one instance = one process (spawn/kill/exit payload)
+│   ├── streamlink.ts           # streamlink process: fetch the stream
+│   ├── proxyList.ts            # ProxyList entity: optional file → pool (warn+degrade), request-scoped rotation
+│   ├── ffmpeg.ts               # ffmpeg process: transcode stdin → Icecast output URL
+│   ├── icecastClient.ts        # Icecast admin-API client: getStatus, sourceUrl, streamUrl, mount-clear readiness
+│   ├── statusReport.ts         # /api/state snapshot + ok/failure verdict
+│   ├── status.ts               # stream/probe status types
+│   ├── streamPipeline.ts       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
+│   ├── stream.ts               # orchestration: replace/stop pipelines, event accounting, health snapshot
+│   ├── ttlWatcher.ts           # zero-listener TTL: polls Icecast, notifies owner via onExpired
+│   ├── withAuth.ts             # API-key validation decorator (exempts /api/state)
+│   ├── withLock.ts             # single-operation concurrency lock (429)
+│   ├── withLogging.ts        # request-logging decorator (redacts ?key=)
+│   ├── server.ts               # Bun.serve: routes /api/stream + /api/state
 │   ├── utils/
-│   │   ├── isValidYoutubeUrl.js  # SSRF-guard URL validation
-│   │   ├── redactProxy.js        # strip proxy credentials for logging
-│   │   └── getYoutubeMeta.js     # YouTube oEmbed metadata
-│   └── index.js                # bootstrap
+│   │   ├── isValidYoutubeUrl.ts  # SSRF-guard URL validation
+│   │   ├── redactProxy.ts        # strip proxy credentials for logging
+│   │   ├── redactApiKey.ts       # strip the API key from logged URLs
+│   │   └── getYoutubeMeta.ts     # YouTube oEmbed metadata
+│   └── index.ts                # bootstrap
 ├── health/src/
 │   ├── check.ts                # base class: timed check envelope (result / duration / error)
 │   ├── streamCheck.ts          # GET stream:8080/api/state
 │   ├── icecastCheck.ts         # GET icecast:8080/admin/stats (basic auth)
 │   ├── caddyCheck.ts           # GET caddy:8089/hc — Caddy's own liveness route
 │   ├── config.ts               # check constants (timeout, rate limit)
-│   ├── logger.ts               # minimal pino-shaped JSON logger
 │   ├── server.ts               # Bun.serve: routes /hc + /health, error handling
 │   └── index.ts                # bootstrap
 ├── caddy/Caddyfile
@@ -132,7 +137,7 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 
 - `API_KEY` env var (dev fallback `dev-api-key` with a startup warning).
 - **Dual mode:** `Authorization: Bearer <key>` header, or `?key=<key>` query param enabled only when `ALLOW_KEY_IN_QUERY=true` (query keys can leak into Caddy's error log and browser history — keep it off).
-- Comparison is constant-time (`timingSafeEqual`). Pino redaction scrubs the `key` param from logged URLs — the redactor matches the _decoded_ param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
+- Comparison is constant-time (`timingSafeEqual`). The `withLogging` decorator uses `redactApiKey` to scrub the `key` param from logged URLs — the redactor matches the _decoded_ param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
 - Applies to all `/api/*` endpoints **except `/api/state`** — see the decision log.
 - The `/stream` audio mount is **not** key-protected: radio receivers cannot send headers.
 
@@ -147,7 +152,7 @@ GET /api/stream?url=https://youtube.com/watch?v=...
   → 500 extraction/transcode/icecast failure
 ```
 
-One in-flight operation at a time: the route holds a `requestInProgress` flag; concurrent start/delete requests are dropped with `429`. `GET /api/stream` without a `url` returns `400` — the endpoint is start-only; status is served by `/api/state`. Requesting the **same URL** while it is already streaming is idempotent — an immediate `302` without restarting the pipeline.
+One in-flight operation at a time: a shared `Lock` guards the routes via the `withLock` decorator; concurrent start/delete requests are dropped with `429`. `GET /api/stream` without a `url` returns `400` — the endpoint is start-only; status is served by `/api/state`. Requesting the **same URL** while it is already streaming is idempotent — an immediate `302` without restarting the pipeline.
 
 ---
 
@@ -187,7 +192,7 @@ A failed start tears the failed pipeline down and emits `stream:error` (it never
 
 ## 5. Event bus
 
-A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.js` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for exits the owner did not cause (owner kills stay silent).
+A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.ts` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for exits the owner did not cause (owner kills stay silent).
 
 | Event            | Emitted by | Consumed by | Payload                                                      |
 | ---------------- | ---------- | ----------- | ------------------------------------------------------------ |
@@ -195,7 +200,7 @@ A small pub/sub bus carries the outward stream lifecycle notifications. `Stream`
 | `stream:stopped` | stream     | logging     | `{ url, reason: manual \| replaced \| process-exit \| ttl }` |
 | `stream:error`   | stream     | logging     | `{ url, error }`                                             |
 
-Every pipeline teardown declares its reason. Operational logging flows through the shared pino logger: `Stream` reports lifecycle transitions; collaborators report their own low-level facts directly (pipeline attempt starts, Icecast poll failures).
+Every pipeline teardown declares its reason. Operational logging flows through the shared JSON logger: `Stream` reports lifecycle transitions; collaborators report their own low-level facts directly (pipeline attempt starts, Icecast poll failures).
 
 ---
 
@@ -231,7 +236,7 @@ Strict YouTube URL validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu
 
 ### 7.4 Secrets hygiene
 
-The API key is never logged (constant-time compare + pino redaction, see §3.1). Default credentials (`dev-api-key`, `secret`/`admin`) log startup warnings. Icecast passwords are patched into a tmpfs config copy at container start — the bind-mounted `icecast.xml` stays credential-free.
+The API key is never logged (constant-time compare + URL redaction, see §3.1). Default credentials (`dev-api-key`, `secret`/`admin`) log startup warnings. Icecast passwords are patched into a tmpfs config copy at container start — the bind-mounted `icecast.xml` stays credential-free.
 
 ### 7.5 Container hardening
 
@@ -249,14 +254,14 @@ Branch protection on `main` requires PR + passing CI.
 
 ## 8. Dependency pinning policy
 
-All dependencies — npm packages, Docker base images, Docker service images, and system packages — are pinned to exact versions for reproducible builds. Without pinning, a rebuild months later can pull a newer dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
+All dependencies — bun packages, Docker base images, Docker service images, and system packages — are pinned to exact versions for reproducible builds. Without pinning, a rebuild months later can pull a newer dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
 
-| Layer                    | What                             | How                                                                                            | Update cadence               |
-| ------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------- |
-| **Bun**                  | `fastify`                        | Exact version in `package.json` (no `^`/`~`); `bun.lock` records resolved URL + integrity hash | Dependabot (bun ecosystem)   |
-| **Docker base image**    | `alpine:3.24`                    | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.2-alpine`        | When bumping Bun or Alpine   |
-| **Docker service image** | `moul/icecast`, `caddy:2-alpine` | Pinned by digest in `docker-compose.yml`                                                       | When bumping Icecast / Caddy |
-| **apk packages**         | `ffmpeg`, `streamlink`           | Exact version via compose build args                                                           | When bumping any package     |
+| Layer                    | What                                     | How                                                                                     | Update cadence               |
+| ------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------- |
+| **bun runtime deps**     | none (`yt-stream-shared` is a workspace) | `bun.lock` records resolved URL + integrity hash                                        | Dependabot (bun ecosystem)   |
+| **Docker base image**    | `alpine:3.24`                            | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.2-alpine` | When bumping Bun or Alpine   |
+| **Docker service image** | `moul/icecast`, `caddy:2-alpine`         | Pinned by digest in `docker-compose.yml`                                                | When bumping Icecast / Caddy |
+| **apk packages**         | `ffmpeg`, `streamlink`                   | Exact version via compose build args                                                    | When bumping any package     |
 
 Resolving digests and versions:
 
@@ -270,13 +275,13 @@ docker run --rm alpine:3.24 apk info -a ffmpeg streamlink
 
 ## 9. Logging
 
-Every service logs to stdout/stderr → `docker logs`. Logs are pino-shaped JSON (numeric level, `pid`/`hostname`, `msg`), level via `LOG_LEVEL`: the health monitor uses a small built-in logger, the stream service still logs through Fastify's pino until its rewrite. Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
+Every service logs to stdout/stderr → `docker logs`. Logs are pino-shaped JSON (numeric level, `pid`/`hostname`, `msg`), level via `LOG_LEVEL`, from a small built-in logger shared by both services. Caddy and Icecast log to their own stderr (access log off). The json-file driver with rotation (10 MB × 3) is set on all compose services; `docker compose logs --timestamps` shows unified UTC stamps.
 
 ---
 
 ## 10. Testing, linting & CI
 
-- **Unit tests** — `bun test`. The health and shared suites use `bun:test` directly (`server.fetch`, `spyOn`); the stream suite still runs on `node:test` (Bun shims it), with module mocks via `bun:test`'s `mock.module()`. Real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
+- **Unit tests** — `bun test`, all suites on `bun:test` (`server.fetch`/real sockets, `spyOn`, `vi.fn`, `mock.module`). Real processes where sensible (the `ChildProcess` one-shot wrapper is tested against real processes). Coverage: process lifecycle and kill fallbacks, wrapper spawn args, `ProxyList` (optional-file loading with degradation, request-scoped rotation), Icecast admin client, pipeline orchestration (attempts + fresh pairs, readiness polling, fail-fast attribution, TTL), Stream orchestration (replace/stop/failure accounting, event emission, health snapshot), auth (header/query/missing/invalid), route status codes, health probes and aggregation, shared `Config` defaults/overrides/immutability, SSRF cases, oEmbed metadata.
 - **Linting & formatting** — `oxlint` + `oxfmt`, configured once at the repo root; every workspace exposes `lint` / `format` / `format:check` scripts.
 - **CI** — lint + format-check + tests on every PR open/update; dependency & secret scanning (§7.6); merge blocked on failure via branch protection.
 

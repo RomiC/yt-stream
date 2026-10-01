@@ -1,8 +1,7 @@
-import { ServerResponse, withRateLimit } from 'yt-stream-shared';
+import { ServerResponse, silentLogger, withRateLimit } from 'yt-stream-shared';
 import { RATE_LIMIT_MAX } from './config';
-import { silentLogger } from './logger';
 import type { Checker } from './check';
-import type { Logger } from './logger';
+import type { Logger } from 'yt-stream-shared';
 
 export interface HealthServices {
   caddyCheck: Checker;

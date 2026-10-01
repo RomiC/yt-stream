@@ -40,9 +40,6 @@
     "packages/health",
     "packages/shared"
   ],
-  "dependencies": {
-    "fastify": "5.12.1"
-  },
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "@types/node": "24.13.5",

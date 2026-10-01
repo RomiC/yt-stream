@@ -34,4 +34,4 @@ WORKDIR /app/packages/${SERVICE}
 USER bun
 
 EXPOSE 8080
-CMD ["bun", "src/index.js"]
+CMD ["bun", "src/index.ts"]

@@ -196,7 +196,7 @@ Everything is configured via environment variables (see `.env.example`):
 | `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N minutes with zero listeners                                              |
 | `PROXY_FILE`              | `./proxy.json`     | **Host** path to the proxy list; mounted read-only into the container as `/app/proxy.json` |
 | `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink quality priority list                                                           |
-| `LOG_LEVEL`               | `info`             | pino log level                                                                             |
+| `LOG_LEVEL`               | `info`             | log level — one of `debug`, `info`, `warn`, `error`, `fatal`                               |
 
 Container-internal ports are fixed and not configurable — see [DESIGN.md](DESIGN.md).
 

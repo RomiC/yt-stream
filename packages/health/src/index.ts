@@ -1,8 +1,7 @@
-import { Config } from 'yt-stream-shared';
+import { Config, createLogger } from 'yt-stream-shared';
 import { CaddyCheck } from './caddyCheck';
 import { IcecastCheck } from './icecastCheck';
 import { StreamCheck } from './streamCheck';
-import { createLogger } from './logger';
 import { createServer } from './server';
 
 const config = new Config();

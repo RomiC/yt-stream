@@ -1,14 +1,16 @@
 import type { RateLimitCheckResult } from './withRateLimit';
 
 export class ServerResponse {
+  static error(status: number, error: string, extra?: Record<string, unknown>): Response {
+    return Response.json({ status, error, ...extra }, { status });
+  }
+
   static notFound(url: URL): Response {
-    return Response.json(
-      {
-        status: 404,
-        error: `"${url.pathname}${url.search}"`
-      },
-      { status: 404 }
-    );
+    return ServerResponse.error(404, `"${url.pathname}${url.search}"`);
+  }
+
+  static internalError(): Response {
+    return ServerResponse.error(500, 'Internal Server Error');
   }
 
   static tooManyRequests(checkResult: RateLimitCheckResult): Response {
@@ -18,16 +20,6 @@ export class ServerResponse {
         error: `You've reached your limit of ${checkResult.limit} requests. Try again in ${Math.ceil(checkResult.resetMs / 1_000)}s.`
       },
       { status: 429, headers: ServerResponse.rateLimitHeaders(checkResult) }
-    );
-  }
-
-  static internalError(): Response {
-    return Response.json(
-      {
-        status: 500,
-        error: 'Internal Server Error'
-      },
-      { status: 500 }
     );
   }
 
