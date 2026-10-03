@@ -1,0 +1,8 @@
+services:
+  stream:
+    build: !reset null
+    image: ghcr.io/romic/yt-stream-stream:${VERSION}
+
+  health:
+    build: !reset null
+    image: ghcr.io/romic/yt-stream-health:${VERSION}
