@@ -191,9 +191,12 @@ describe('Stream server', () => {
       start();
 
       const response = await request('/api/state');
+      const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect((await response.json()).general.health).toBe('ok');
+      expect(body.general.health).toBe('ok');
+      expect(body.version).toBe('dev');
+      expect(body.commit).toBe('unknown');
     });
 
     test('returns 503 when the verdict is failure', async () => {
@@ -211,6 +214,19 @@ describe('Stream server', () => {
 
       expect(response.status).toBe(503);
       expect((await response.json()).general.health).toBe('failure');
+    });
+
+    test('includes configured release metadata', async () => {
+      activeServer = createServer({
+        config,
+        releaseMetadata: { version: 'v1.0.0', commit: 'abc1234' },
+        port: 0,
+        ...makeDeps()
+      });
+
+      const response = await request('/api/state');
+
+      expect(await response.json()).toMatchObject({ version: 'v1.0.0', commit: 'abc1234' });
     });
 
     test('does NOT require auth', async () => {

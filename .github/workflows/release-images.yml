@@ -51,6 +51,8 @@ jobs:
           build-args: |
             SERVICE=stream
             APK_PACKAGES=ffmpeg=8.1.2-r0 streamlink=8.4.0-r0
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_COMMIT=${{ steps.meta.outputs.commit }}
           tags: |
             ghcr.io/romic/yt-stream-stream:${{ steps.meta.outputs.version }}
             ghcr.io/romic/yt-stream-stream:sha-${{ steps.meta.outputs.commit }}
@@ -64,6 +66,8 @@ jobs:
           push: true
           build-args: |
             SERVICE=health
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_COMMIT=${{ steps.meta.outputs.commit }}
           tags: |
             ghcr.io/romic/yt-stream-health:${{ steps.meta.outputs.version }}
             ghcr.io/romic/yt-stream-health:sha-${{ steps.meta.outputs.commit }}

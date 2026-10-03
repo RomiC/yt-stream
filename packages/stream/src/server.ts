@@ -1,9 +1,9 @@
-import { ServerResponse, silentLogger } from 'yt-stream-shared';
+import { getReleaseMetadata, ServerResponse, silentLogger } from 'yt-stream-shared';
 import { withAuth } from './withAuth';
 import { withLock } from './withLock';
 import { withLogging } from './withLogging';
 import { isValidYoutubeUrl } from './utils/isValidYoutubeUrl';
-import type { Config, Logger } from 'yt-stream-shared';
+import type { Config, Logger, ReleaseMetadata } from 'yt-stream-shared';
 import type { Lock } from './withLock';
 import type { StatusReport } from './statusReport';
 import type { Stream } from './stream';
@@ -13,6 +13,7 @@ export interface StreamServerOptions {
   stream: Stream;
   statusReport: StatusReport;
   logger?: Logger;
+  releaseMetadata?: ReleaseMetadata;
   port?: number;
   hostname?: string;
 }
@@ -22,6 +23,7 @@ export function createServer({
   stream,
   statusReport,
   logger = silentLogger(),
+  releaseMetadata = getReleaseMetadata(),
   port = config.stream.port,
   hostname = '0.0.0.0'
 }: StreamServerOptions) {
@@ -30,7 +32,10 @@ export function createServer({
   const stateEndpoint = async (): Promise<Response> => {
     const state = await statusReport.getStatus();
 
-    return Response.json(state, { status: state.general.health === 'ok' ? 200 : 503 });
+    return Response.json(
+      { ...state, version: releaseMetadata.version, commit: releaseMetadata.commit },
+      { status: state.general.health === 'ok' ? 200 : 503 }
+    );
   };
 
   const startStream = async (request: Request): Promise<Response> => {

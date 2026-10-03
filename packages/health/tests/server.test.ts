@@ -36,8 +36,21 @@ describe('health server', () => {
     expect(await response.json()).toEqual({
       caddy: { result: 'ok', duration: 1 },
       icecast: { result: 'ok', duration: 1 },
-      stream: { result: 'ok', duration: 1 }
+      stream: { result: 'ok', duration: 1 },
+      version: 'dev',
+      commit: 'unknown'
     });
+  });
+
+  test('GET /hc includes configured release metadata', async () => {
+    activeServer = createServer({
+      services: services(),
+      releaseMetadata: { version: 'v1.0.0', commit: 'abc1234' }
+    });
+
+    const response = await request(activeServer, '/hc');
+
+    expect(await response.json()).toMatchObject({ version: 'v1.0.0', commit: 'abc1234' });
   });
 
   test('GET /hc returns 503 when any check failed', async () => {
