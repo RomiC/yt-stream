@@ -79,6 +79,38 @@ The stream also stops on its own:
 - **Pipeline failure** — if streamlink or ffmpeg dies (bad URL, YouTube block, proxy down)
 - **Replacement** — starting a new URL replaces the current stream
 
+## How to deploy
+
+Production deploys use prebuilt GHCR images from a GitHub Release tag. This flow requires Docker Compose v2.24.4 or newer because `docker-compose.release.yml` uses merge reset tags. Do not deploy `latest`; pin the exact release in a local `.env.release` file next to the production `.env`:
+
+```env
+VERSION=v1.0.0
+```
+
+Review the fully merged production config before changing containers:
+
+```bash
+docker compose \
+  --env-file .env \
+  --env-file .env.release \
+  -f docker-compose.yml \
+  -f docker-compose.release.yml \
+  config
+```
+
+Start the selected release:
+
+```bash
+docker compose \
+  --env-file .env \
+  --env-file .env.release \
+  -f docker-compose.yml \
+  -f docker-compose.release.yml \
+  up -d --no-build --pull missing --remove-orphans
+```
+
+To roll back, change `VERSION` to the previous release, then rerun the same command.
+
 ## Proxies
 
 YouTube aggressively blocks requests from datacenter/VPS IP ranges. If the service runs on a VPS (the typical case), stream extraction will almost certainly fail without a proxy:
