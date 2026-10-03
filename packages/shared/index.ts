@@ -7,5 +7,8 @@ export type { RequestHandler } from './lib/types';
 
 export { ServerResponse } from './lib/serverResponse';
 
+export { getReleaseMetadata } from './lib/releaseMetadata';
+export type { ReleaseMetadata } from './lib/releaseMetadata';
+
 export { createLogger, silentLogger } from './lib/logger';
 export type { Logger, LogLevel } from './lib/logger';

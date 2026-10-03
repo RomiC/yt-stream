@@ -1,7 +1,7 @@
-import { ServerResponse, silentLogger, withRateLimit } from 'yt-stream-shared';
+import { getReleaseMetadata, ServerResponse, silentLogger, withRateLimit } from 'yt-stream-shared';
 import { RATE_LIMIT_MAX } from './config';
 import type { Checker } from './check';
-import type { Logger } from 'yt-stream-shared';
+import type { Logger, ReleaseMetadata } from 'yt-stream-shared';
 
 export interface HealthServices {
   caddyCheck: Checker;
@@ -12,6 +12,7 @@ export interface HealthServices {
 export interface HealthServerOptions {
   services: HealthServices;
   logger?: Logger;
+  releaseMetadata?: ReleaseMetadata;
   port?: number;
   hostname?: string;
   rateLimitMax?: number;
@@ -22,6 +23,7 @@ const TIME_WINDOW_MS = 60_000;
 export function createServer({
   services,
   logger = silentLogger(),
+  releaseMetadata = getReleaseMetadata(),
   port = 0,
   hostname = '0.0.0.0',
   rateLimitMax = RATE_LIMIT_MAX
@@ -36,7 +38,10 @@ export function createServer({
 
       const allOk = caddy.result === 'ok' && icecast.result === 'ok' && stream.result === 'ok';
 
-      return Response.json({ caddy, icecast, stream }, { status: allOk ? 200 : 503 });
+      return Response.json(
+        { caddy, icecast, stream, version: releaseMetadata.version, commit: releaseMetadata.commit },
+        { status: allOk ? 200 : 503 }
+      );
     },
     { max: rateLimitMax, timeWindowMs: TIME_WINDOW_MS }
   );
