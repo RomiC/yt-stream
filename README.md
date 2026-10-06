@@ -38,7 +38,7 @@ cp .env.example .env
 cp proxy.json.example proxy.json
 ```
 
-3. Set `API_KEY` to protect `/api/stream` endpoints
+3. Set `API_KEY` to protect `/api/*` endpoints
 
 ```
 # editing .env
@@ -196,13 +196,13 @@ Recreating caddy briefly severs live `/stream` connections; clients reconnect. (
 
 ## API
 
-All `/api/*` endpoints except `/api/state` require an API key: `Authorization: Bearer <key>` header, or `?key=<key>` query param when `ALLOW_KEY_IN_QUERY=true`.
+All `/api/*` endpoints require an API key: `Authorization: Bearer <key>` header, or `?key=<key>` query param when `ALLOW_KEY_IN_QUERY=true`.
 
 | Method   | Path                                     | Auth | Purpose                                                            |
 | -------- | ---------------------------------------- | ---- | ------------------------------------------------------------------ |
 | `GET`    | `/api/stream?url=<youtube_url>`          | ✅   | Start a stream; `302` redirect to the audio mount                  |
 | `DELETE` | `/api/stream`                            | ✅   | Stop the current stream                                            |
-| `GET`    | `/api/state`                             | —    | Service status + health verdict (JSON); key-exempt by decision     |
+| `GET`    | `/api/state`                             | ✅   | Service status + health verdict (JSON)                             |
 | `GET`    | `/stream`                                | —    | Audio mount (Icecast, via Caddy) — play it in any client           |
 | `GET`    | `/hc` (alias `/health`) on `HEALTH_PORT` | —    | Component health of caddy / icecast / stream; `503` if any is down |
 
@@ -220,7 +220,7 @@ Everything is configured via environment variables (see `.env.example`):
 | `TLS_CERT_FILE`           | —                  | Host path to the full chain (leaf + intermediates); symlink resolved by Docker             |
 | `TLS_KEY_FILE`            | —                  | Host path to the private key; both set → Caddy serves the pair, ACME skipped               |
 | `HEALTH_PORT`             | `8080`             | Host port → health service                                                                 |
-| `API_KEY`                 | `dev-api-key`      | API key for `/api/*` (dev fallback logs a startup warning)                                 |
+| `API_KEY`                 | `dev-api-key`      | API key for `/api/*`, also used by the health probe (dev fallback logs a startup warning)  |
 | `ALLOW_KEY_IN_QUERY`      | `false`            | Allow `?key=` query auth (can leak into logs/history — keep off)                           |
 | `ICECAST_SOURCE_PASSWORD` | `secret`           | Source auth (ffmpeg → Icecast)                                                             |
 | `ICECAST_ADMIN_PASSWORD`  | `admin`            | Admin API auth (internal polling; also used by the health probe)                           |

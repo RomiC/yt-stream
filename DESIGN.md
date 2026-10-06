@@ -52,7 +52,7 @@ packages/
 │   ├── streamPipeline.ts       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
 │   ├── stream.ts               # orchestration: replace/stop pipelines, event accounting, health snapshot
 │   ├── ttlWatcher.ts           # zero-listener TTL: polls Icecast, notifies owner via onExpired
-│   ├── withAuth.ts             # API-key validation decorator (exempts /api/state)
+│   ├── withAuth.ts             # API-key validation decorator
 │   ├── withLock.ts             # single-operation concurrency lock (429)
 │   ├── withLogging.ts        # request-logging decorator (redacts ?key=)
 │   ├── server.ts               # Bun.serve: routes /api/stream + /api/state
@@ -64,7 +64,7 @@ packages/
 │   └── index.ts                # bootstrap
 ├── health/src/
 │   ├── check.ts                # base class: timed check envelope (result / duration / error)
-│   ├── streamCheck.ts          # GET stream:8080/api/state
+│   ├── streamCheck.ts          # GET stream:8080/api/state with bearer auth
 │   ├── icecastCheck.ts         # GET icecast:8080/admin/stats (basic auth)
 │   ├── caddyCheck.ts           # GET caddy:8089/hc — Caddy's own liveness route
 │   ├── config.ts               # check constants (timeout, rate limit)
@@ -129,7 +129,7 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 | -------- | ---------------------------------------- | ---- | --------------------------------------------- |
 | `GET`    | `/api/stream?url=…`                      | ✅   | Start a stream; `302` redirect to audio mount |
 | `DELETE` | `/api/stream`                            | ✅   | Stop the current stream                       |
-| `GET`    | `/api/state`                             | —    | Service state + health verdict (JSON)         |
+| `GET`    | `/api/state`                             | ✅   | Service state + health verdict (JSON)         |
 | `GET`    | `/stream`                                | —    | Audio mount (Icecast, public)                 |
 | `GET`    | `/hc` (alias `/health`) on `HEALTH_PORT` | —    | Aggregated component health                   |
 
@@ -138,7 +138,7 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 - `API_KEY` env var (dev fallback `dev-api-key` with a startup warning).
 - **Dual mode:** `Authorization: Bearer <key>` header, or `?key=<key>` query param enabled only when `ALLOW_KEY_IN_QUERY=true` (query keys can leak into Caddy's error log and browser history — keep it off).
 - Comparison is constant-time (`timingSafeEqual`). The `withLogging` decorator uses `redactApiKey` to scrub the `key` param from logged URLs — the redactor matches the _decoded_ param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
-- Applies to all `/api/*` endpoints **except `/api/state`** — see the decision log.
+- Applies to all `/api/*` endpoints, including `/api/state`.
 - The `/stream` audio mount is **not** key-protected: radio receivers cannot send headers.
 
 ### 3.2 Start flow & concurrency
@@ -209,7 +209,7 @@ Every pipeline teardown declares its reason. Operational logging flows through t
 A dedicated `health` container is an independent failure domain: it probes the components from the outside over plain HTTP and aggregates the result. It is the only service besides Caddy with a published host port.
 
 - **Probes** (2 s timeout each, run concurrently):
-  - `stream` → `GET stream:8080/api/state`
+  - `stream` → `GET stream:8080/api/state` (`Authorization: Bearer <API_KEY>`)
   - `icecast` → `GET icecast:8080/admin/stats` (basic auth, admin password)
   - `caddy` → `GET caddy:8089/hc` (Caddy's own static liveness route, internal-only)
 - **Response:** `{ caddy, icecast, stream }`, each `{ result: 'ok' | 'error', duration, error? }`. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
@@ -222,9 +222,9 @@ A dedicated `health` container is an independent failure domain: it probes the c
 
 ## 7. Security design
 
-### 7.1 API authentication & key exemption
+### 7.1 API authentication
 
-See §3.1. **Decision — `/api/state` is key-exempt:** the health monitor and plain status probers cannot attach auth headers. The endpoint is read-only status (no control) and is also reachable publicly through Caddy's `/api/*` routing. Accepted exposure: stream state, listener count, component statuses. Revisit if the payload grows more sensitive.
+See §3.1. All `/api/*` endpoints require `API_KEY`, including `/api/state`. The health monitor receives the same key and sends it as a bearer token for its stream probe; `/hc` itself stays unauthenticated for external probers and exposes component status only.
 
 ### 7.2 SSRF guard
 
@@ -297,7 +297,7 @@ Every service logs to stdout/stderr → `docker logs`. Logs are pino-shaped JSON
 | 4   | API moved under `/api/` prefix                                                 | Avoids the collision between the `/stream` management route and the `/stream` audio mount                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 5   | Caddy is the only public door; `handle` blocks everywhere                      | Mixed path-matched directives reorder under Caddy's directive ordering — see the warning in §2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 6   | Dedicated `health` container, published on its own port (#18)                  | Independent failure domain; external probers cannot send auth headers; a wedged component cannot take the monitor down                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 7   | `/api/state` is key-exempt (#18)                                               | Read-only status needed by header-less probers; accepted exposure — see §7.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 7   | `/api/state` requires `API_KEY` (#58)                                          | Keep the whole `/api/*` namespace consistently protected; the health monitor uses bearer auth for its stream probe — see §7.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 8   | Internal ports fixed at 8080 (all services) + Caddy liveness on 8089           | Per-container namespaces make them collision-free; only host-published ports need configuring                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 9   | Trivy image scanning dropped from CI                                           | Advisory DB re-rates CVEs over time → non-deterministic severity gate (§7.6)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 10  | Bun-workspaces monorepo, `yt-stream-shared` Config                             | Two services, one env contract — no drift between copies                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

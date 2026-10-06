@@ -229,12 +229,12 @@ describe('Stream server', () => {
       expect(await response.json()).toMatchObject({ version: 'v1.0.0', commit: 'abc1234' });
     });
 
-    test('does NOT require auth', async () => {
+    test('requires auth', async () => {
       start();
 
       const response = await fetch(`http://127.0.0.1:${activeServer!.port}/api/state`);
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(401);
     });
   });
 });

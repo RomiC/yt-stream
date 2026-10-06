@@ -12,6 +12,6 @@ createServer({
   services: {
     caddyCheck: new CaddyCheck(config.caddyHealth.host, config.caddyHealth.port),
     icecastCheck: new IcecastCheck(config.icecast.host, config.icecast.port, config.icecast.adminPassword),
-    streamCheck: new StreamCheck(config.stream.host, config.stream.port)
+    streamCheck: new StreamCheck(config.stream.host, config.stream.port, config.apiKey)
   }
 });
