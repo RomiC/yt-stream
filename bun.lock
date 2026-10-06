@@ -14,20 +14,20 @@
     },
     "packages/health": {
       "name": "yt-stream-health",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "dependencies": {
-        "yt-stream-shared": "1.0.0",
+        "yt-stream-shared": "1.1.0",
       },
     },
     "packages/shared": {
       "name": "yt-stream-shared",
-      "version": "1.0.0",
+      "version": "1.1.0",
     },
     "packages/stream": {
       "name": "yt-stream-stream",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "dependencies": {
-        "yt-stream-shared": "1.0.0",
+        "yt-stream-shared": "1.1.0",
       },
     },
   },
