@@ -72,7 +72,7 @@ export function createServer({
     port,
     hostname,
     routes: {
-      '/api/state': { GET: withLogging(stateEndpoint, logger) },
+      '/api/state': { GET: withLogging(withAuth(stateEndpoint, config), logger) },
       '/api/stream': {
         GET: withLogging(withAuth(withLock(startStream, lock), config), logger),
         DELETE: withLogging(withAuth(withLock(stopStream, lock), config), logger)

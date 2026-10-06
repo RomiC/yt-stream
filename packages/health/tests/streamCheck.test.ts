@@ -5,10 +5,11 @@ import { deferredFetch } from './helpers';
 describe('streamCheck', () => {
   test('fetches the stream state endpoint and reports ok', async () => {
     const { spy, control } = deferredFetch();
-    const resultPromise = new StreamCheck('stream', 8080).check();
+    const resultPromise = new StreamCheck('stream', 8080, 'test-api-key').check();
 
     expect(spy.mock.calls.length).toBe(1);
     expect(spy.mock.calls[0][0]).toBe('http://stream:8080/api/state');
+    expect(spy.mock.calls[0][1]?.headers).toEqual({ Authorization: 'Bearer test-api-key' });
     expect(spy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 
     control.resolve?.(new Response(null, { status: 200 }));
@@ -21,7 +22,7 @@ describe('streamCheck', () => {
 
   test('reports an error on a non-ok response', async () => {
     const { spy, control } = deferredFetch();
-    const resultPromise = new StreamCheck('stream', 8080).check();
+    const resultPromise = new StreamCheck('stream', 8080, 'test-api-key').check();
 
     control.resolve?.(new Response(null, { status: 500, statusText: 'Internal Server Error' }));
 
@@ -34,7 +35,7 @@ describe('streamCheck', () => {
 
   test('reports an error when fetch rejects', async () => {
     const { spy, control } = deferredFetch();
-    const resultPromise = new StreamCheck('stream', 8080).check();
+    const resultPromise = new StreamCheck('stream', 8080, 'test-api-key').check();
 
     control.reject?.(new Error('Network error'));
 
