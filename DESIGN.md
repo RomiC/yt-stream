@@ -2,6 +2,37 @@
 
 A self-hosted service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. A single `GET /api/stream?url=…` request starts the pipeline and redirects to the audio mountpoint. Exactly **one stream** runs at a time; starting a new URL replaces the current one.
 
+## Table of contents
+
+- [Guiding principles](#guiding-principles)
+- [1. Architecture](#1-architecture)
+  - [Package layout (Bun workspaces)](#package-layout-bun-workspaces)
+- [2. Network & port model](#2-network--port-model)
+  - [Caddy routing](#caddy-routing)
+- [3. Public API & authentication](#3-public-api--authentication)
+  - [3.1 Authentication](#31-authentication)
+  - [3.2 Start flow & concurrency](#32-start-flow--concurrency)
+  - [3.3 YouTube URL compatibility](#33-youtube-url-compatibility)
+- [4. Stream lifecycle](#4-stream-lifecycle)
+  - [4.1 No state machine](#41-no-state-machine)
+  - [4.2 Start sequence](#42-start-sequence)
+  - [4.3 Failure semantics & auto-stop](#43-failure-semantics--auto-stop)
+  - [4.4 Timeout and retry reference](#44-timeout-and-retry-reference)
+  - [4.5 Failure and recovery matrix](#45-failure-and-recovery-matrix)
+- [5. Event bus](#5-event-bus)
+- [6. Health monitoring (#18)](#6-health-monitoring-18)
+- [7. Security design](#7-security-design)
+  - [7.1 API authentication](#71-api-authentication)
+  - [7.2 SSRF guard](#72-ssrf-guard)
+  - [7.3 Listener limit](#73-listener-limit)
+  - [7.4 Secrets hygiene](#74-secrets-hygiene)
+  - [7.5 Container hardening](#75-container-hardening)
+  - [7.6 CI scanning](#76-ci-scanning)
+- [8. Dependency pinning policy](#8-dependency-pinning-policy)
+- [9. Logging](#9-logging)
+- [10. Testing, linting & CI](#10-testing-linting--ci)
+- [11. Recorded decisions log](#11-recorded-decisions-log)
+
 ### Guiding principles
 
 - **Single entry point** — the application is reachable only through Caddy (one public URL); the health monitor is the single deliberate exception, published on its own port.
@@ -87,6 +118,8 @@ Tests mirror each package's `src/` tree under `tests/`.
 
 Container-internal ports are **fixed, not configurable**: stream, icecast and health all listen on 8080 (per-container network namespaces — no conflict); Caddy's liveness route lives on 8089. Only host-published ports are env-configurable.
 
+For local development, prefer `PUBLIC_BASE_URL=http://yts.localhost` over bare `localhost` to distinguish this service from other local services. Caddy uses that hostname as its site address, so send requests to the same hostname. With the stock Compose configuration, keep `PUBLIC_BASE_URL` portless and include a non-standard host port only in client request URLs. For example, `PUBLIC_BASE_URL=http://yts.localhost` with `HTTP_PORT=8081` is accessed at `http://yts.localhost:8081`: Compose maps host port 8081 to container port 80. Adding `:8081` to `PUBLIC_BASE_URL` would change Caddy's internal listener to 8081 and break that mapping. The hostname alone does not prevent host-port conflicts. If the client cannot resolve `.localhost` names, map `yts.localhost` to `127.0.0.1` in the hosts file.
+
 ### Caddy routing
 
 ```
@@ -117,7 +150,7 @@ Caddy's TLS mode is decided once at container start, because the Caddyfile has n
 
 A wrapper writes `/etc/caddy/tls.caddy` — `tls /certs/fullchain.pem /certs/privkey.pem` when both files are non-empty, otherwise a comment (a valid, empty snippet) — and the site block imports it; the wrapper always writes the file, so the `import` never dangles. With the pair provided Caddy skips ACME (`auto_https` logs "skipping automatic certificate management"); with the variables unset an empty committed placeholder is mounted instead, and the automatic-HTTPS / HTTP-only modes behave exactly as before (`create_host_path: false` makes a typo'd path fail `up` loudly, as with `PROXY_FILE` #12).
 
-Renewal is operator-owned. The symlink resolution is pinned for the container's lifetime and Caddy does **not** re-read file-loaded certificates in a running process ([caddy#5139](https://github.com/caddyserver/caddy/issues/5139)), so a renewed pair requires `docker compose up -d --force-recreate caddy` — automated by a certbot deploy hook in `/etc/letsencrypt/renewal-hooks/deploy/` (README has the script). A brief listener drop per renewal is accepted over a copy-and-`caddy reload` pipeline.
+Renewal is operator-owned. The symlink resolution is pinned for the container's lifetime and Caddy does **not** re-read file-loaded certificates in a running process ([caddy#5139](https://github.com/caddyserver/caddy/issues/5139)), so a renewed pair requires recreating only Caddy with `up -d --no-deps --no-build --force-recreate caddy` and the deployment's environment files/Compose overrides — automated by a certbot deploy hook in `/etc/letsencrypt/renewal-hooks/deploy/` (README has the production script). A brief listener drop per renewal is accepted over a copy-and-`caddy reload` pipeline.
 
 Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/admin/*`, `/status.xsl`, and `/` are unreachable from outside the Docker network.
 
@@ -136,7 +169,8 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 ### 3.1 Authentication
 
 - `API_KEY` env var (dev fallback `dev-api-key` with a startup warning).
-- **Dual mode:** `Authorization: Bearer <key>` header, or `?key=<key>` query param enabled only when `ALLOW_KEY_IN_QUERY=true` (query keys can leak into Caddy's error log and browser history — keep it off).
+- **Dual mode:** `Authorization: Bearer <key>` header, or `?key=<key>` query param enabled only when `ALLOW_KEY_IN_QUERY=true`. Query-key authentication enables a single start-and-play URL that can be pasted directly into a player without custom headers: `/api/stream?key=<key>&url=<encoded-youtube-url>` starts the stream and redirects to the public audio mount.
+- Enable query authentication for that player-link workflow; otherwise leave it disabled (the default) or turn it off. Such links carry the API key and can leak through player/browser history or Caddy's error log; treat them as credentials. The player must follow HTTP redirects.
 - Comparison is constant-time (`timingSafeEqual`). The `withLogging` decorator uses `redactApiKey` to scrub the `key` param from logged URLs — the redactor matches the _decoded_ param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
 - Applies to all `/api/*` endpoints, including `/api/state`.
 - The `/stream` audio mount is **not** key-protected: radio receivers cannot send headers.
@@ -154,17 +188,36 @@ GET /api/stream?url=https://youtube.com/watch?v=...
 
 One in-flight operation at a time: a shared `Lock` guards the routes via the `withLock` decorator; concurrent start/delete requests are dropped with `429`. `GET /api/stream` without a `url` returns `400` — the endpoint is start-only; status is served by `/api/state`. Requesting the **same URL** while it is already streaming is idempotent — an immediate `302` without restarting the pipeline.
 
+### 3.3 YouTube URL compatibility
+
+`isValidYoutubeUrl` accepts these HTTP(S) URL prefixes, with an optional `www.` host prefix and a non-empty ID containing letters, digits, underscores, or hyphens:
+
+| URL form   | Example                                |
+| ---------- | -------------------------------------- |
+| Watch      | `https://www.youtube.com/watch?v=<id>` |
+| Live       | `https://youtube.com/live/<id>`        |
+| Shorts     | `https://youtube.com/shorts/<id>`      |
+| Short link | `https://youtu.be/<id>`                |
+
+The validator checks a prefix, not video existence, access rights, or full trailing query syntax. For watch URLs, `v` must be the first query parameter; channel/playlist URLs and other hostnames such as `m.youtube.com` do not match. Credentials, IP hosts, explicit ports (including standard ports), and non-HTTP(S) schemes are rejected. Encode the complete YouTube URL as the API's `url` parameter to preserve any `&` characters.
+
+URL acceptance does **not** guarantee extraction: the pinned streamlink YouTube plugin must find a playable stream using `STREAMLINK_QUALITY` (default `audio_only,worst`), and YouTube must allow access from the selected exit IP. There is no application-level cookies/login configuration for restricted sources. The API does not distinguish live from finite sources: it runs whatever streamlink extracts. A finite source ending cleanly stops the pipeline with `process-exit`, just like another child-process exit; it does not loop or resume.
+
+The URL forms and lifecycle handling are covered by unit tests; automated end-to-end extraction against real YouTube live streams and finite videos is not currently covered. The Compose stack also pins Icecast to `linux/amd64`; an ARM host needs amd64 emulation support.
+
 ---
 
 ## 4. Stream lifecycle
 
 ### 4.1 No state machine
 
-There is no explicit state machine. Each generation is a `StreamPipeline` that owns the TTL watcher, the `IcecastClient`, and the current streamlink/ffmpeg pair — a **fresh pair per start attempt**: a wrapper instance mirrors exactly one process, so a retry constructs new instances. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#currentPipeline` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus Icecast mount readiness:
+There is no explicit state machine. Each generation is a `StreamPipeline` that owns the TTL watcher, the `IcecastClient`, and the current streamlink/ffmpeg pair — a **fresh pair per start attempt**: a wrapper instance mirrors exactly one process, so a retry constructs new instances. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#currentPipeline` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus a readiness flag set once mount activation succeeds:
 
-- `starting` — processes alive, mount not yet active
-- `streaming` — processes alive, mount active
+- `starting` — processes alive, startup readiness not yet confirmed
+- `streaming` — processes alive, startup readiness confirmed
 - `stopped` — either process dead
+
+The readiness flag is not continuously refreshed. `/api/state` separately probes the current Icecast mount, so `general.state: streaming` can coexist with an unavailable or stopped mount and a `failure` health verdict.
 
 ### 4.2 Start sequence
 
@@ -174,7 +227,7 @@ There is no explicit state machine. Each generation is a `StreamPipeline` that o
 2. Stop any existing pipeline — the TTL watcher first, then both processes killed in parallel and awaited (the old stream ends with reason `replaced` **before** the new start is attempted, so a failed replacement cannot leave it unaccounted for).
 3. `prepareMountPoint()` — Icecast reachable and the mount free (old source released).
 4. The pipeline draws the proxy from a per-request `ProxyList` rotation: a fresh shuffle per start, attempts advance without repeating (reshuffling once exhausted). An empty pool means direct connection — the optional file's absence or malformation warns but never blocks startup.
-5. Spawn streamlink + ffmpeg, pipe them, then wait for the Icecast mount to become active (30 s budget, 500 ms poll interval) — proof the pipeline works end-to-end. A failed attempt is retried up to 3 times: both processes are torn down and the pipeline **advances to the next pool entry** (a poisoned exit is never retried through itself). Each attempt logs the redacted proxy.
+5. Spawn streamlink + ffmpeg, pipe them, then wait for the Icecast mount to become active (30 s budget, 500 ms poll interval) — proof the pipeline works end-to-end. A failed attempt is retried up to 3 times: both processes are torn down and the pipeline **advances to the next pool entry**, reusing proxies only once the pool is exhausted. Each attempt logs the redacted proxy.
 6. Fail fast when a process exits before the mount is active (attributed with its exit code/signal and stderr tail); a timeout also fails the attempt. Exhausted attempts fail the request (the failure log carries the last proxy); any other step throwing maps to `500` — no retries outside the start-attempt loop.
 7. On success: start the TTL watcher, fetch YouTube oEmbed metadata and push `<author> - <title>` to Icecast (best-effort — unavailable metadata never fails the stream), emit `stream:started`.
 
@@ -187,6 +240,42 @@ A failed start tears the failed pipeline down and emits `stream:error` (it never
 - **Zero-listener TTL** — the TTL watcher polls Icecast every 60 s; `STREAM_TTL_MINUTES` (default 15) of zero listeners tears the pipeline down (reason `ttl`).
 - A stream that lost its source (mount gone) is reaped by the same TTL watcher (no listeners → TTL). An **unreachable Icecast** counts as zero listeners — admin, source and listeners share port 8080, so nobody can be listening — which also reaps a black-holed pipeline where ffmpeg blocks silently without exiting.
 - **Manual stop** (`DELETE /api/stream`) → reason `manual`.
+
+### 4.4 Timeout and retry reference
+
+These are application defaults, not configurable environment variables unless noted. Streamlink/ffmpeg can also have their own upstream retry and timeout behavior.
+
+| Operation              | Default                                | Behavior                                                                                                                             |
+| ---------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Pipeline startup       | 3 attempts                             | Fresh child processes and the next proxy per attempt; after exhausting the pool, reshuffle. No application backoff between attempts. |
+| Mount activation       | 30 s per attempt, 500 ms poll interval | Process exit or unreachable Icecast fails the attempt early.                                                                         |
+| Old mount release      | 10 s, 500 ms poll interval             | Required before startup and between retries; failure aborts the start rather than consuming further attempts.                        |
+| Icecast admin fetch    | 5 s per request                        | Applies to status polling and metadata updates. Status failures report unreachable Icecast and zero listeners.                       |
+| Child-process shutdown | 5 s grace period                       | Send SIGTERM, then SIGKILL if the process has not exited. Both children are stopped in parallel.                                     |
+| Zero-listener TTL      | 15 min (`STREAM_TTL_MINUTES`)          | Check immediately after startup, then every 60 s. Listeners reset the idle clock; `0` disables the watcher.                          |
+| YouTube oEmbed fetch   | 5 s                                    | Best-effort metadata lookup after startup; failure does not stop audio.                                                              |
+| Health probe           | 2 s per component                      | Probes run concurrently on each health request; a timeout makes the component `error`.                                               |
+
+Poll deadlines are checked between fetches, so the in-flight request can extend a mount wait beyond its nominal budget. A start request may span multiple activation waits, mount-release waits, and process shutdowns; 30 s is **not** a total HTTP request deadline. The health monitor's 2 s stream probe can time out while `/api/state` waits on a 5 s Icecast fetch.
+
+### 4.5 Failure and recovery matrix
+
+Compose uses `restart: unless-stopped` for containers. This restarts crashed containers, not failed health probes or stopped child pipelines. Active URLs and pipeline state live only in memory; there is no automatic stream restoration after an application restart.
+
+| Failure/event                                     | Result                                                                                                                                       | Recovery                                                                                                                                                                                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stream container crashes or is recreated          | Child processes and in-memory state are lost; audio ends.                                                                                    | Docker restarts a crashed container, but the client must issue a new start request. An explicitly stopped container needs to be started by the operator.                                                                      |
+| Streamlink/ffmpeg exits during startup            | The current attempt is torn down.                                                                                                            | Retry within the 3-attempt budget, advancing the proxy; failure to prepare the mount aborts retries. Exhausted attempts return `500`.                                                                                         |
+| Proxy fails after startup or a finite source ends | A child exit stops the entire pipeline (`process-exit`).                                                                                     | No application-level reconnect; fix the cause if needed and start again.                                                                                                                                                      |
+| Icecast is unavailable before startup             | Mount preparation fails; API returns `500`.                                                                                                  | Restore Icecast/connectivity or correct credentials, then retry the request.                                                                                                                                                  |
+| Icecast crashes or restarts during playback       | Its mount and listener connections are lost. A child exit stops the pipeline; if children stay alive, zero-listener TTL eventually reaps it. | Docker can restart Icecast, but the application does not reconstruct the pipeline. Once Icecast is available, stop any lingering pipeline and start again. With TTL disabled, cleanup requires a process exit or manual stop. |
+| Caddy is restarted/recreated                      | Public API and audio connections drop; internal pipeline can continue.                                                                       | Clients reconnect after Caddy returns. Restart audio through the API only if the pipeline has also stopped.                                                                                                                   |
+| Health monitor is unavailable                     | External health checks fail; audio/control services are independent.                                                                         | Docker restarts a crashed monitor; inspect its logs if probes remain unavailable.                                                                                                                                             |
+| Zero-listener TTL expires                         | Pipeline stops with reason `ttl`.                                                                                                            | Issue another start request when listening is needed.                                                                                                                                                                         |
+| Replacement URL cannot start                      | The old pipeline has already stopped (`replaced`); failed replacement is torn down.                                                          | Correct the URL/proxy or explicitly request the previous URL again; there is no rollback to the previous stream.                                                                                                              |
+| Metadata lookup/update fails                      | Audio continues; title metadata may be absent.                                                                                               | No pipeline recovery is needed; metadata is best-effort and has no application retry loop.                                                                                                                                    |
+
+A healthy `/api/state` or `/hc` response does not mean audio is playing: an idle service with reachable Icecast is healthy. Use `general.state`, process status, and Icecast mount state from `/api/state` to distinguish readiness from playback.
 
 ---
 
@@ -212,7 +301,7 @@ A dedicated `health` container is an independent failure domain: it probes the c
   - `stream` → `GET stream:8080/api/state` (`Authorization: Bearer <API_KEY>`)
   - `icecast` → `GET icecast:8080/admin/stats` (basic auth, admin password)
   - `caddy` → `GET caddy:8089/hc` (Caddy's own static liveness route, internal-only)
-- **Response:** `{ caddy, icecast, stream }`, each `{ result: 'ok' | 'error', duration, error? }`. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
+- **Response:** `{ caddy, icecast, stream, version, commit }`; each component is `{ result: 'ok' | 'error', duration, error? }`, with duration in milliseconds. Version and commit identify the health monitor build. HTTP `503` when any component is `error`, otherwise `200` — the status code is the machine-readable verdict.
 - A failing **or hanging** component never takes the monitor down: every probe wraps in try/catch with its own timeout.
 - **Rate limited** — 60 requests/minute per client (`429` beyond, with `x-ratelimit-*` headers and `retry-after`); the `withRateLimit` wrapper guards `/hc` and `/health` (unknown paths are not counted). The store is capped at 5,000 clients with least-recently-used eviction, avoiding full-map scans. Evicted clients get a fresh allowance on their next request; expired windows reset when accessed.
 - **Unauthenticated by decision** — external probers cannot send auth headers. The endpoint exposes component status only, no control surface.
@@ -228,7 +317,7 @@ See §3.1. All `/api/*` endpoints require `API_KEY`, including `/api/state`. The
 
 ### 7.2 SSRF guard
 
-Strict YouTube URL validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu.be` hosts, HTTP(S) schemes only; rejects IPs, `@` userinfo tricks, and non-standard ports.
+YouTube URL-prefix validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu.be` hosts (optional `www.`), HTTP(S) schemes only; rejects IPs, `@` userinfo tricks, and explicit ports. Accepted path forms and validation boundaries are documented in §3.3.
 
 ### 7.3 Listener limit
 
