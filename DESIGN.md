@@ -89,6 +89,7 @@ packages/
 │   ├── server.ts               # Bun.serve: routes /api/stream + /api/state
 │   ├── utils/
 │   │   ├── isValidYoutubeUrl.ts  # SSRF-guard URL validation
+│   │   ├── resolveYoutubeSource.ts # source selection + canonical video identity (#7 groundwork)
 │   │   ├── redactProxy.ts        # strip proxy credentials for logging
 │   │   ├── redactApiKey.ts       # strip the API key from logged URLs
 │   │   └── getYoutubeMeta.ts     # YouTube oEmbed metadata
@@ -200,6 +201,10 @@ One in-flight operation at a time: a shared `Lock` guards the routes via the `wi
 | Short link | `https://youtu.be/<id>`                |
 
 The validator checks a prefix, not video existence, access rights, or full trailing query syntax. For watch URLs, `v` must be the first query parameter; channel/playlist URLs and other hostnames such as `m.youtube.com` do not match. Credentials, IP hosts, explicit ports (including standard ports), and non-HTTP(S) schemes are rejected. Encode the complete YouTube URL as the API's `url` parameter to preserve any `&` characters.
+
+The internal `resolveYoutubeSource(URLSearchParams)` helper prepares source identity for multi-stream support (#7); it is not yet wired to the server. It returns `null` when neither `url` nor `video_id` is supplied, otherwise `{ videoId, url }` with a case-preserved ID and canonical `https://www.youtube.com/watch?v=<id>` URL. Empty, conflicting, repeated, or invalid source parameters raise `InvalidYoutubeSourceError`. Unrelated parameters, including the API key, do not select a source.
+
+Normalization applies the existing URL guard **before** URL parsing, so default-port normalization cannot hide a forbidden explicit port. It then requires exactly 11 ID characters from `[A-Za-z0-9_-]`, one `v` value for watch URLs, and a complete supported path (an optional trailing slash is allowed for short/live/shorts URLs, additional path segments are not). Surrounding whitespace and raw CR/LF/tab characters are rejected. Tracking, timestamp, playlist, and fragment options are discarded; equivalent inputs resolve to the same video identity. Existing `/api/stream` validation and replacement behavior remain unchanged until API cutover.
 
 URL acceptance does **not** guarantee extraction: the pinned streamlink YouTube plugin must find a playable stream using `STREAMLINK_QUALITY` (default `audio_only,worst`), and YouTube must allow access from the selected exit IP. There is no application-level cookies/login configuration for restricted sources. The API does not distinguish live from finite sources: it runs whatever streamlink extracts. A finite source ending cleanly stops the pipeline with `process-exit`, just like another child-process exit; it does not loop or resume.
 
