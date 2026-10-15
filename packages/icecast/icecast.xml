@@ -24,8 +24,7 @@
         <port>8080</port>
     </listen-socket>
 
-    <mount>
-        <mount-name>/stream</mount-name>
+    <mount type="default">
         <max-listeners>2</max-listeners>
     </mount>
 

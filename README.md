@@ -31,9 +31,9 @@ Architecture, design decisions, and security rationale are documented in **[DESI
 
 Four Docker containers behind a single public entry point:
 
-- **Caddy** — reverse proxy and the only public door (ports 80/443). Routes `/api/*` to the stream service and `/stream` to Icecast; everything else returns 404. Handles TLS — automatic HTTPS or operator-provided certificates ([details](#tls)).
+- **Caddy** — reverse proxy and the only public door (ports 80/443). Routes `/api/*` to the stream service and `/stream` or `/stream/<id>` to Icecast; everything else returns 404. Dynamic audio routing prepares for multi-stream support; the current API still starts only one stream at `/stream`. Handles TLS — automatic HTTPS or operator-provided certificates ([details](#tls)).
 - **stream** (Bun) — the application. Validates the URL, runs the `streamlink → ffmpeg` pipeline, pushes MP3 audio to Icecast, watches listener counts.
-- **Icecast** — the streaming server. Serves the audio on the `/stream` mountpoint to any number of listeners (capped by `ICECAST_MAX_LISTENERS`).
+- **Icecast** — the streaming server. Currently serves application audio on `/stream`. A default mount policy applies `ICECAST_MAX_LISTENERS` independently to every mount, including dynamically named mounts.
 - **health** (Bun) — an independent monitor on its own port (`HEALTH_PORT`) that probes Caddy, Icecast, and the stream service and reports a single verdict.
 
 A separate `shared` package holds the configuration common to both services.
