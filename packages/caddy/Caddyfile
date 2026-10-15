@@ -3,7 +3,8 @@
 	handle /api/* {
 		reverse_proxy stream:8080
 	}
-	handle /stream {
+	@audio path_regexp audio ^/stream(?:/[A-Za-z0-9_-]+)?$
+	handle @audio {
 		reverse_proxy icecast:8080
 	}
 	handle {

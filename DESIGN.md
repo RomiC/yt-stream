@@ -49,7 +49,7 @@ Four containers on one Docker network, plus a shared build context:
 ```
             ┌──────────── host ────────────┐
  HTTP/HTTPS │  caddy :80/:443  (front door)│──── /api/* ──▶ stream :8080 (internal)
- HEALTH_PORT│                              │──── /stream ▶ icecast :8080 (internal)
+ HEALTH_PORT│                              │──── audio ──▶ icecast :8080 (internal)
             │  health :8080 (published)    │
             └──────────────────────────────┘
              caddy liveness :8089 (internal only)
@@ -57,7 +57,7 @@ Four containers on one Docker network, plus a shared build context:
 
 - **caddy** — reverse proxy, the only public door. TLS when `PUBLIC_BASE_URL` is `https://…`: automatic HTTPS (Let's Encrypt) by default, or operator-provided certificates (§2); HTTP-only mode for local dev. Also exposes a static liveness route on an internal-only port.
 - **stream** — Bun application: URL validation, the `streamlink → ffmpeg` pipeline, Icecast admin polling, TTL auto-stop, metadata push. Internal port only.
-- **icecast** — off-the-shelf streaming server (`moul/icecast`, digest-pinned). Single fixed mountpoint `/stream`; serves audio to listeners and an admin API to the internal network.
+- **icecast** — off-the-shelf streaming server (`moul/icecast`, digest-pinned). Serves audio mounts and an admin API to the internal network. A default mount policy caps listeners independently for every source mount; the application currently publishes only `/stream`.
 - **health** — independent failure domain (#18). Probes the three components from the outside over plain HTTP and aggregates the result.
 
 ### Package layout (Bun workspaces)
@@ -128,7 +128,8 @@ For local development, prefer `PUBLIC_BASE_URL=http://yts.localhost` over bare `
 	handle /api/* {
 		reverse_proxy stream:8080
 	}
-	handle /stream {
+	@audio path_regexp audio ^/stream(?:/[A-Za-z0-9_-]+)?$
+	handle @audio {
 		reverse_proxy icecast:8080
 	}
 	handle {
@@ -152,7 +153,9 @@ A wrapper writes `/etc/caddy/tls.caddy` — `tls /certs/fullchain.pem /certs/pri
 
 Renewal is operator-owned. The symlink resolution is pinned for the container's lifetime and Caddy does **not** re-read file-loaded certificates in a running process ([caddy#5139](https://github.com/caddyserver/caddy/issues/5139)), so a renewed pair requires recreating only Caddy with `up -d --no-deps --no-build --force-recreate caddy` and the deployment's environment files/Compose overrides — automated by a certbot deploy hook in `/etc/letsencrypt/renewal-hooks/deploy/` (README has the production script). A brief listener drop per renewal is accepted over a copy-and-`caddy reload` pipeline.
 
-Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/admin/*`, `/status.xsl`, and `/` are unreachable from outside the Docker network.
+Everything except `/api/*`, `/stream`, and `/stream/<id>` returns 404 externally. The audio matcher accepts one ID segment containing letters, digits, underscores, or hyphens; nested paths, dots, and traversal paths do not match. `handle` preserves the full mount path and query string when proxying; do not replace it with `handle_path`. Icecast's `/admin/*`, `/status.xsl`, and `/` remain unreachable from outside the Docker network.
+
+Dynamic audio routing prepares the infrastructure for #7; it does not create streams or change the current single-stream API. `/stream` remains available until API cutover. An audio mount with no connected source returns Icecast's `404`.
 
 ---
 
@@ -163,7 +166,8 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 | `GET`    | `/api/stream?url=…`                      | ✅   | Start a stream; `302` redirect to audio mount |
 | `DELETE` | `/api/stream`                            | ✅   | Stop the current stream                       |
 | `GET`    | `/api/state`                             | ✅   | Service state + health verdict (JSON)         |
-| `GET`    | `/stream`                                | —    | Audio mount (Icecast, public)                 |
+| `GET`    | `/stream`                                | —    | Current audio mount (Icecast, public)         |
+| `GET`    | `/stream/<id>`                           | —    | Dynamic audio mount routing (#7 groundwork)   |
 | `GET`    | `/hc` (alias `/health`) on `HEALTH_PORT` | —    | Aggregated component health                   |
 
 ### 3.1 Authentication
@@ -173,7 +177,7 @@ Everything except `/api/*` and `/stream` returns 404 externally. Icecast's `/adm
 - Enable query authentication for that player-link workflow; otherwise leave it disabled (the default) or turn it off. Such links carry the API key and can leak through player/browser history or Caddy's error log; treat them as credentials. The player must follow HTTP redirects.
 - Comparison is constant-time (`timingSafeEqual`). The `withLogging` decorator uses `redactApiKey` to scrub the `key` param from logged URLs — the redactor matches the _decoded_ param name, so percent-encoding (`?k%65y=`) cannot smuggle the key into logs.
 - Applies to all `/api/*` endpoints, including `/api/state`.
-- The `/stream` audio mount is **not** key-protected: radio receivers cannot send headers.
+- The `/stream` and `/stream/<id>` audio mounts are **not** key-protected: radio receivers cannot send headers.
 
 ### 3.2 Start flow & concurrency
 
@@ -321,7 +325,9 @@ YouTube URL-prefix validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu
 
 ### 7.3 Listener limit
 
-`ICECAST_MAX_LISTENERS` (default 2) is enforced by Icecast alone (`<max-listeners>` per mount — excess clients rejected at connect time). The cap is injected into the Icecast config by its container's start command and never reaches the application.
+`ICECAST_MAX_LISTENERS` (default 2) is enforced independently per mount by Icecast alone — excess clients are rejected at connect time. A `<mount type="default">` policy supplies `<max-listeners>` for both `/stream` and dynamically named mounts without requiring per-ID configuration. It deliberately has no `<mount-name>`: Icecast 2.4 default policies apply to mounts without a matching normal block ([configuration reference](https://icecast.org/docs/icecast-2.4.1/config-file.html#mountsettings)).
+
+Default policies do not merge with explicit normal mount blocks; adding such a block requires setting its listener cap explicitly. The existing container start command patches the default policy from `ICECAST_MAX_LISTENERS`; this setting never reaches the application. The listener cap is separate from Icecast's global client/source limits and the planned application stream cap.
 
 ### 7.4 Secrets hygiene
 
