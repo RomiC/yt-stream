@@ -267,6 +267,8 @@ Replace the host and placeholders; URL-encode the API key and the complete YouTu
 
 Status codes for `GET /api/stream`: `302` success (redirect), `400` missing/invalid URL, `401` missing/invalid key, `429` another stream operation is in progress, `500` extraction/transcode/Icecast failure. `DELETE /api/stream` returns `200` (stopped), `404` (no active stream), or `429`.
 
+YouTube URLs use standard URL normalization and require a supported hostname, pathname, and 11-character video ID. Unsupported paths and repeated watch `v` parameters return `400`; see [accepted URL forms](DESIGN.md#33-youtube-url-compatibility).
+
 ## Configuration
 
 Everything is configured via environment variables (see `.env.example`):

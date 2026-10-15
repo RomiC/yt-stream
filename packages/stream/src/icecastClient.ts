@@ -1,7 +1,7 @@
 import type { Logger } from 'yt-stream-shared';
 import type { IcecastProbe } from './status';
 
-const MOUNTPOINT = '/stream';
+const DEFAULT_MOUNTPOINT = '/stream';
 const MOUNTPOINT_CLEAR_TIMEOUT = 10_000;
 const WAIT_POLL_INTERVAL = 500;
 
@@ -18,6 +18,7 @@ export interface IcecastClientOptions {
   sourcePassword: string;
   adminPassword: string;
   publicBaseUrl: string;
+  mountpoint?: string;
   logger: Logger;
   timeouts?: {
     mountpointClearTimeout?: number;
@@ -35,6 +36,7 @@ export class IcecastClient {
   #sourcePassword: string;
   #adminPassword: string;
   #publicBaseUrl: string;
+  #mountpoint: string;
   #logger: Logger;
   #mountpointClearTimeout: number;
   #waitPollInterval: number;
@@ -45,14 +47,24 @@ export class IcecastClient {
     sourcePassword,
     adminPassword,
     publicBaseUrl,
+    mountpoint = DEFAULT_MOUNTPOINT,
     logger,
     timeouts = {}
   }: IcecastClientOptions) {
+    const segments = mountpoint.split('/').slice(1);
+    if (
+      !mountpoint.startsWith('/') ||
+      segments.some((segment) => !segment || segment === '.' || segment === '..' || /[^A-Za-z0-9._~-]/.test(segment))
+    ) {
+      throw new Error('Invalid Icecast mountpoint');
+    }
+
     this.#host = host;
     this.#port = port;
     this.#sourcePassword = sourcePassword;
     this.#adminPassword = adminPassword;
     this.#publicBaseUrl = publicBaseUrl;
+    this.#mountpoint = mountpoint;
     this.#logger = logger;
     this.#mountpointClearTimeout = timeouts.mountpointClearTimeout ?? MOUNTPOINT_CLEAR_TIMEOUT;
     this.#waitPollInterval = timeouts.waitPollInterval ?? WAIT_POLL_INTERVAL;
@@ -77,11 +89,11 @@ export class IcecastClient {
   }
 
   get sourceUrl(): string {
-    return `icecast://source:${this.#sourcePassword}@${this.#host}:${this.#port}/stream`;
+    return `icecast://source:${this.#sourcePassword}@${this.#host}:${this.#port}${this.#mountpoint}`;
   }
 
   get streamUrl(): string {
-    return `${this.#publicBaseUrl.replace(/\/+$/, '')}/stream`;
+    return `${this.#publicBaseUrl.replace(/\/+$/, '')}${this.#mountpoint}`;
   }
 
   async getStatus(): Promise<IcecastProbe> {
@@ -98,7 +110,7 @@ export class IcecastClient {
         ...this.#parseListeners(await res.text())
       };
     } catch (err) {
-      this.#logger.warn({ err: (err as Error).message }, 'icecast poll failed');
+      this.#logger.warn({ mountpoint: this.#mountpoint, err: (err as Error).message }, 'icecast poll failed');
       return { icecastReachable: false, mountpointActive: false, listeners: 0 };
     }
   }
@@ -117,7 +129,7 @@ export class IcecastClient {
   async setMetadata(title: string): Promise<boolean> {
     try {
       const params = new URLSearchParams({
-        mount: MOUNTPOINT,
+        mount: this.#mountpoint,
         mode: 'updinfo',
         song: title.replace(/[^\x20-\x7E]/g, '')
       });
@@ -134,17 +146,18 @@ export class IcecastClient {
   }
 
   #parseListeners(xml: string): { mountpointActive: boolean; listeners: number } {
-    const mountRegex = new RegExp(`<source\\s[^>]*mount="${MOUNTPOINT}"[^>]*>([\\s\\S]*?)</source>`, 'i');
-    const mountMatch = xml.match(mountRegex);
-    if (!mountMatch) {
-      return { mountpointActive: false, listeners: 0 };
+    const sources = xml.matchAll(/<source\b[^>]*\smount="([^"]+)"[^>]*>([\s\S]*?)<\/source>/gi);
+    for (const source of sources) {
+      if (source[1] !== this.#mountpoint) {
+        continue;
+      }
+      const listenersMatch = source[2].match(/<listeners>(\d+)<\/listeners>/i);
+      return {
+        mountpointActive: true,
+        listeners: listenersMatch ? parseInt(listenersMatch[1], 10) : 0
+      };
     }
-
-    const listenersMatch = mountMatch[1].match(/<listeners>(\d+)<\/listeners>/i);
-    return {
-      mountpointActive: true,
-      listeners: listenersMatch ? parseInt(listenersMatch[1], 10) : 0
-    };
+    return { mountpointActive: false, listeners: 0 };
   }
 
   async #waitForMountState(active: boolean, timeoutMs: number): Promise<void> {
