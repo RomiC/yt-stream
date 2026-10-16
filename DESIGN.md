@@ -2,6 +2,8 @@
 
 A self-hosted service that converts a YouTube live stream or video into an Icecast-compatible MP3 audio stream. A single `GET /api/stream?url=…` request starts the pipeline and redirects to the audio mountpoint. Exactly **one stream** runs at a time; starting a new URL replaces the current one.
 
+Sections 1–11 describe the current implementation. [Section 12](#12-multi-stream-contract-7) defines the target multi-stream contract for #7; it is not implemented yet.
+
 ## Table of contents
 
 - [Guiding principles](#guiding-principles)
@@ -32,6 +34,13 @@ A self-hosted service that converts a YouTube live stream or video into an Iceca
 - [9. Logging](#9-logging)
 - [10. Testing, linting & CI](#10-testing-linting--ci)
 - [11. Recorded decisions log](#11-recorded-decisions-log)
+- [12. Multi-stream contract (#7)](#12-multi-stream-contract-7)
+  - [12.1 API and input identity](#121-api-and-input-identity)
+  - [12.2 Response schemas and health](#122-response-schemas-and-health)
+  - [12.3 Concurrency and lifecycle](#123-concurrency-and-lifecycle)
+  - [12.4 Capacity and deployment resources](#124-capacity-and-deployment-resources)
+  - [12.5 Errors and cancellation](#125-errors-and-cancellation)
+  - [12.6 Migration and delivery](#126-migration-and-delivery)
 
 ### Guiding principles
 
@@ -77,7 +86,7 @@ packages/
 │   ├── streamlink.ts           # streamlink process: fetch the stream
 │   ├── proxyList.ts            # ProxyList entity: optional file → pool (warn+degrade), request-scoped rotation
 │   ├── ffmpeg.ts               # ffmpeg process: transcode stdin → Icecast output URL
-│   ├── icecastClient.ts        # Icecast admin-API client: getStatus, sourceUrl, streamUrl, mount-clear readiness
+│   ├── icecastClient.ts        # mount-scoped Icecast client: status/listeners, URLs, metadata, mount-clear readiness
 │   ├── statusReport.ts         # /api/state snapshot + ok/failure verdict
 │   ├── status.ts               # stream/probe status types
 │   ├── streamPipeline.ts       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
@@ -88,7 +97,9 @@ packages/
 │   ├── withLogging.ts        # request-logging decorator (redacts ?key=)
 │   ├── server.ts               # Bun.serve: routes /api/stream + /api/state
 │   ├── utils/
-│   │   ├── isValidYoutubeUrl.ts  # SSRF-guard URL validation
+│   │   ├── isValidYoutubeUrl.ts  # boolean URL validation
+│   │   ├── getYoutubeVideoId.ts  # ID extraction from an already validated URL
+│   │   ├── resolveYoutubeSource.ts # source selection + canonical video identity (#7 groundwork)
 │   │   ├── redactProxy.ts        # strip proxy credentials for logging
 │   │   ├── redactApiKey.ts       # strip the API key from logged URLs
 │   │   └── getYoutubeMeta.ts     # YouTube oEmbed metadata
@@ -194,7 +205,7 @@ One in-flight operation at a time: a shared `Lock` guards the routes via the `wi
 
 ### 3.3 YouTube URL compatibility
 
-`isValidYoutubeUrl` accepts these HTTP(S) URL prefixes, with an optional `www.` host prefix and a non-empty ID containing letters, digits, underscores, or hyphens:
+`isValidYoutubeUrl` parses with `new URL()`, checks the protocol, hostname, supported pathname, and ID syntax, and returns only `true` or `false`. It does not call the extractor. After validation succeeds, `getYoutubeVideoId` extracts the case-preserved ID without validation. Supported HTTP(S) URL forms have an optional `www.` host prefix and an exactly 11-character ID containing letters, digits, underscores, or hyphens:
 
 | URL form   | Example                                |
 | ---------- | -------------------------------------- |
@@ -203,7 +214,11 @@ One in-flight operation at a time: a shared `Lock` guards the routes via the `wi
 | Shorts     | `https://youtube.com/shorts/<id>`      |
 | Short link | `https://youtu.be/<id>`                |
 
-The validator checks a prefix, not video existence, access rights, or full trailing query syntax. For watch URLs, `v` must be the first query parameter; channel/playlist URLs and other hostnames such as `m.youtube.com` do not match. Credentials, IP hosts, explicit ports (including standard ports), and non-HTTP(S) schemes are rejected. Encode the complete YouTube URL as the API's `url` parameter to preserve any `&` characters.
+URL parsing follows standard WHATWG normalization; validation operates on the parsed fields without imposing additional raw-input restrictions. Only `youtube.com` and `youtu.be` hosts (optionally prefixed with `www.`) and the supported path forms are accepted. Short/live/shorts paths may have an optional trailing slash but no additional segments after normalization. Watch URLs require exactly one `v` parameter, in any query position. HTTP(S) schemes are required; credentials and non-default ports are rejected. Explicit default ports are accepted by standard URL parsing. Validation checks ID syntax, not video existence or access rights. Encode the complete YouTube URL as the API's `url` parameter to preserve any `&` characters.
+
+The internal `resolveYoutubeSource(URLSearchParams)` helper prepares source identity for multi-stream support (#7); it is not yet wired to the server. It returns `null` when neither `url` nor `video_id` is supplied, otherwise only the case-preserved video ID string. The pipeline integration constructs the canonical `https://www.youtube.com/watch?v=<id>` URL when needed; the resolver does not return redundant derived data. Empty, conflicting, repeated, or invalid source parameters raise `InvalidYoutubeSourceError`. Unrelated parameters, including the API key, do not select a source.
+
+For URL inputs, the resolver calls `isValidYoutubeUrl` once and, only on success, calls `getYoutubeVideoId`. The extractor assumes valid input: it parses for extraction but performs no checks and calls no validator. The resolver does not revalidate the extracted ID. Bare `video_id` inputs are validated separately. Tracking, timestamp, playlist, and fragment options are discarded; equivalent inputs resolve to the same video identity. The existing `/api/stream` endpoint also uses `isValidYoutubeUrl`, so malformed URLs formerly accepted by the prefix guard now return `400`. Its routes, successful start-and-play flow, and replacement behavior remain unchanged until API cutover.
 
 URL acceptance does **not** guarantee extraction: the pinned streamlink YouTube plugin must find a playable stream using `STREAMLINK_QUALITY` (default `audio_only,worst`), and YouTube must allow access from the selected exit IP. There is no application-level cookies/login configuration for restricted sources. The API does not distinguish live from finite sources: it runs whatever streamlink extracts. A finite source ending cleanly stops the pipeline with `process-exit`, just like another child-process exit; it does not loop or resume.
 
@@ -222,6 +237,10 @@ There is no explicit state machine. Each generation is a `StreamPipeline` that o
 - `stopped` — either process dead
 
 The readiness flag is not continuously refreshed. `/api/state` separately probes the current Icecast mount, so `general.state: streaming` can coexist with an unavailable or stopped mount and a `failure` health verdict.
+
+Each `IcecastClient` accepts an optional `mountpoint`, defaulting to `/stream`. Source/playback URLs, listener and activity probes, mount-release waits, and metadata updates all refer to that client's immutable mount selection on the same shared Icecast server. Matching is literal and case-sensitive, so a neighboring mount, case variant, or filename containing a regex metacharacter cannot satisfy another client's probe. Poll-failure logs identify the selected mount.
+
+Mountpoints must be absolute paths with non-empty segments containing only URI-unreserved characters (`A–Z`, `a–z`, digits, `.`, `_`, `~`, `-`); `.` and `..` segments, trailing slashes, query/fragment delimiters, percent escapes, whitespace, and credentials are rejected at construction. This keeps source/playback URLs and Icecast's mount name identical without encoding or path normalization. The current `Stream` still uses the default mount: public routes, Caddy configuration, and single-stream orchestration are unchanged in this preparatory step for #7.
 
 ### 4.2 Start sequence
 
@@ -321,7 +340,7 @@ See §3.1. All `/api/*` endpoints require `API_KEY`, including `/api/state`. The
 
 ### 7.2 SSRF guard
 
-YouTube URL-prefix validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu.be` hosts (optional `www.`), HTTP(S) schemes only; rejects IPs, `@` userinfo tricks, and explicit ports. Accepted path forms and validation boundaries are documented in §3.3.
+YouTube URL validation (`isValidYoutubeUrl`): only `youtube.com` / `youtu.be` hosts (optional `www.`), HTTP(S) schemes only; rejects IPs, credentials, and non-default ports. Accepted path forms and validation boundaries are documented in §3.3.
 
 ### 7.3 Listener limit
 
@@ -404,3 +423,170 @@ Every service logs to stdout/stderr → `docker logs`. Logs are pino-shaped JSON
 | 16  | Process wrappers are one-shot: one instance = one process                      | The host model emulated process identity inside a longer-lived object (kill-mark graveyard, null-proc tri-state, replace-on-spawn). One-shot instances make identity real; retries construct fresh pairs; `spawn`/`onExit` chain, `kill` stays a promise                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 17  | `StreamPipeline` lives in its own module                                       | Each layer gets its own test seam: the pipeline is tested against mocked wrappers/Icecast, `Stream` against a fake pipeline — instead of both through one facade                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 18  | TLS: provided certs via file mounts + `--force-recreate`; ACME otherwise (#34) | Non-standard host ports can never pass ACME's fixed `:80`/`:443` challenges, so pre-existing pairs must be usable on any ports while auto-HTTPS/HTTP-only stay untouched. Mode is chosen once at container start — a wrapper writes the `tls` snippet the Caddyfile imports (no Caddyfile conditionals; a missing pair must not be fatal). **File** mounts (not a dir) let Docker resolve certbot's `live/` symlinks at creation; the resolution is pinned per container and Caddy never re-reads file certs in-process ([caddy#5139](https://github.com/caddyserver/caddy/issues/5139)) — so renewal = recreate the container (certbot deploy hook), accepting a brief listener drop over a copy+`caddy reload` pipeline |
+
+---
+
+## 12. Multi-stream contract (#7)
+
+This is the target contract for [#7](https://github.com/RomiC/yt-stream/issues/7), not a description of currently available endpoints. Implementation is split into reviewable steps; all implementation PRs target `feat/multi-stream-7` before integration into `main`.
+
+### 12.1 API and input identity
+
+| Method   | Path                      | Behavior                                                               |
+| -------- | ------------------------- | ---------------------------------------------------------------------- |
+| `GET`    | `/api/streams`            | List starting and streaming entries, including their IDs and phases    |
+| `GET`    | `/api/streams?url=…`      | Find-or-create by YouTube video identity; `302` to ready audio         |
+| `GET`    | `/api/streams?video_id=…` | Same find-or-create behavior using a YouTube video ID                  |
+| `GET`    | `/api/streams/:id`        | `302` to a ready, live stream; otherwise `404`; never creates a stream |
+| `GET`    | `/api/streams/:id/state`  | Per-stream state and health; `404` after public removal                |
+| `DELETE` | `/api/streams/:id`        | Remove publicly, stop owned work, await cleanup, then return `204`     |
+| `GET`    | `/stream/:id`             | Public Icecast audio mount                                             |
+
+There is no POST creation endpoint, collection-wide DELETE, default stream, or replacement of another video. GET creation intentionally preserves start-and-play links for redirect-following players. With query authentication enabled, both `/api/streams?url=<encoded-youtube-url>&key=<key>` and `/api/streams?video_id=r_SV26dPwuA&key=<key>` are directly playable links.
+
+All supported `/api/*` endpoints retain the authentication rules in §3.1, including authentication before input validation. Audio mounts remain public. Every API response, including errors and redirects, uses `Cache-Control: no-store`; cache reuse must not skip creation or replay an obsolete redirect. Redirects use a relative `Location: /stream/<id>` and do not forward the API key to the audio URL.
+
+Source identity and validation:
+
+- Public stream IDs are generated with built-in `crypto.randomUUID()`. They are opaque, case-sensitive lookup keys, not YouTube IDs or sequential counters. Randomness reduces guessing, not the need for authentication.
+- Deduplicate by the case-sensitive YouTube video ID. Keep internal pipeline-generation identity separate from public identity to guard delayed callbacks. A newly created entry receives a new public ID, including after stopping and restarting the same video.
+- Exactly one of `url` or `video_id` selects find-or-create. Supplying both, repeated source parameters, or an empty supplied value is `400`; only absence of both selects listing. Authentication parameters do not select creation.
+- For full URLs, call the boolean validator `isValidYoutubeUrl` once, then call `getYoutubeVideoId` only after validation succeeds. The extractor does not validate, and its result is not revalidated. Bare `video_id` inputs are validated independently. Both forms require exactly 11 characters from `[A-Za-z0-9_-]`; video existence and extractability are not checked.
+- Source resolution returns only the video ID (or `null` for listing). Construct the pipeline and metadata URL as `https://www.youtube.com/watch?v=<video_id>` at the pipeline integration boundary. Tracking parameters, timestamps (`t`, `start`), playlist parameters, and fragments are ignored, not passed through. There is no per-request offset, playlist, or quality selection. Equivalent accepted URLs always share one stream.
+- Validation checks syntax, not existence or extractability; extraction and finite-source behavior remain as described in §3.3.
+
+### 12.2 Response schemas and health
+
+Every API response carries the serving application's release metadata in `X-Service-Version` and `X-Service-Commit` headers, including redirects, empty `204` responses, authentication failures, and other errors. Every JSON API response also includes root `version` and `commit` fields with matching values. Use the existing release-metadata source and its development fallbacks (`dev` / `unknown`); do not add bodies to redirects or `204` responses just to carry metadata.
+
+`GET /api/streams` returns `200` without awaiting any startup or teardown promise:
+
+```json
+{
+  "streams": [{ "id": "a7ad2e11-46d3-4b56-bcfa-cc8e673d7842", "video_id": "r_SV26dPwuA", "state": "streaming" }],
+  "max_streams": 3,
+  "version": "dev",
+  "commit": "unknown"
+}
+```
+
+Each list item contains only `id`, `video_id`, and `state` (`starting` or `streaming`); detailed process, mount, and listener information belongs to the state endpoint. Use `streams.length` for the number of public entries; `max_streams` is the configured cap. Ordering is not an API guarantee. Internal capacity usage can exceed `streams.length` during cleanup, so the list length does not guarantee that a new stream can start. All values describe one registry snapshot.
+
+`GET /api/streams/:id/state` returns the per-stream snapshot with `state` at the root and no `general` object:
+
+```json
+{
+  "id": "a7ad2e11-46d3-4b56-bcfa-cc8e673d7842",
+  "video_id": "r_SV26dPwuA",
+  "started_at": "2026-08-01T12:00:00.000Z",
+  "state": "streaming",
+  "streamlink": { "status": "running" },
+  "ffmpeg": { "status": "running" },
+  "icecast": { "status": "available", "state": "streaming", "listeners": 1 },
+  "version": "dev",
+  "commit": "unknown"
+}
+```
+
+- `started_at` is the readiness-confirmation time in UTC ISO 8601, or `null` while starting. Root `state` is only `starting` or `streaming`; there is no public stopped-state resource.
+- Process and Icecast field values retain their definitions from §4.1. A retrying startup may temporarily have stopped child processes or an inactive mount without being a failed stream.
+- Health is `ok` when Icecast is reachable and either the entry is starting, or both children are running and its mount is active. Otherwise it is `failure`. Return `200` for `ok`, `503` for `failure`; the verdict is conveyed by HTTP status, not a separate per-stream response field.
+- Initial readiness remains distinct from a current mount probe: a live, previously ready pipeline can have root `state: streaming` but unhealthy Icecast. Playback redirects use confirmed readiness and current process liveness, not an additional synchronous admin probe.
+- If an entry is removed while a state probe is in flight, return `404` instead of publishing a stopped snapshot or another generation's data.
+
+There is no aggregate `/api/state` endpoint. The health service checks the stream application with authenticated `GET stream:8080/api/streams`, with no source query parameters, and treats a non-2xx response as failure.
+
+- Listing checks application/API availability, not the health of each pipeline. It returns `200` for a successful authenticated snapshot even when the registry is empty, full, starting, or cleaning up. It does not probe Icecast or await lifecycle operations.
+- The health service's existing separate Icecast probe checks the one shared Icecast server; mount-specific clients do not represent separate servers. Its Caddy probe remains unchanged.
+- Per-stream process/mount diagnostics remain at `/api/streams/:id/state`. A failed stream is removed and recorded in logs, not retained as a service-health failure.
+- The health service retains its existing timeouts, aggregation, status codes, and rate limiting; only its stream-check URL changes.
+
+### 12.3 Concurrency and lifecycle
+
+The registry owns entries and lifecycle coordination; each `StreamPipeline` continues owning its processes, retry attempts, readiness, and TTL watcher. No new stored pipeline state machine is required.
+
+| Situation                            | Behavior                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------- |
+| Same video already streaming         | Immediate `302` to its existing mount, without restarting                             |
+| Same video starting                  | Join its startup promise; redirect only after readiness                               |
+| Different video requested            | Start independently if capacity permits                                               |
+| List/state requested during startup  | Read the snapshot without waiting for startup                                         |
+| DELETE during startup                | Hide the entry, cancel startup, await cleanup; joined creation requests receive `409` |
+| Same video requested during teardown | Wait for that video's cleanup, then retry find-or-create/capacity checks              |
+
+Register video identity, public identity, startup coordination, and the capacity reservation before asynchronous startup work. Joining requests share the outcome, not one consumable HTTP `Response`. Client disconnects do not cancel shared startup; explicit deletion cancels it, and zero listeners are handled by TTL after successful startup. Cancellation prevents subsequent retry attempts or late readiness from resurrecting an entry.
+
+For every terminal cause (`manual`, `ttl`, `process-exit`, or `start-failed`):
+
+1. Hide the entry from public lookup/listing immediately; playback and state reads return `404`.
+2. Stop the TTL watcher and terminate/await owned children. Concurrent delete, TTL, and exit callbacks share one teardown operation.
+3. Retain only temporary internal coordination needed for cleanup, same-video exclusion, and capacity accounting. Remove those references when cleanup finishes.
+4. Release the reservation only after both processes have exited; if teardown fails, keep the reservation until cleanup can be confirmed and log the failure.
+5. Log the terminal outcome with public ID, video ID, internal generation identity, reason, and relevant process/error attribution. Account for the terminal lifecycle outcome exactly once; failed starts never emit `stream:started`.
+
+Metadata callbacks, process exits, and TTL expiry operate on their owning generation and mount. They cannot remove or update a later entry for the same video, or another video. A stopped entry is never archived in the registry; logs, subject to existing rotation, are the historical record. Restart/recreation restores no streams or IDs automatically.
+
+### 12.4 Capacity and deployment resources
+
+`MAX_STREAMS` is a positive base-10 integer, default `1`. Invalid, zero, negative, or fractional values fail configuration at startup rather than silently falling back. It limits starting, streaming, and still-cleaning-up pipelines together. Reserve before process spawn; release only after confirmed cleanup. Reusing an existing streaming/starting entry requires no additional slot, even at capacity. New streams at capacity receive `503`; there is no implicit eviction or global operation-in-progress `429`.
+
+Compose exposes independently configurable stream-container limits:
+
+| Setting                 | Default | Owner                                               |
+| ----------------------- | ------- | --------------------------------------------------- |
+| `MAX_STREAMS`           | `1`     | Shared application `Config`, passed through Compose |
+| `STREAM_MEMORY_LIMIT`   | `256M`  | Compose memory limit                                |
+| `STREAM_CPU_LIMIT`      | `0.5`   | Compose CPU limit                                   |
+| `STREAM_TTL_MINUTES`    | `15`    | Existing setting, applied per pipeline              |
+| `ICECAST_MAX_LISTENERS` | `2`     | Icecast limit, applied per dynamic mount            |
+
+Raising `MAX_STREAMS` requires explicit operator sizing; memory is not automatically multiplied by stream count. Measure shared Bun overhead, per-pipeline memory/CPU, buffers, simultaneous startup peaks, and available headroom. Account for Icecast resource/source limits and proxy bandwidth too. Icecast's source cap must be at least `MAX_STREAMS`. An OOM kill of the shared stream container can interrupt every pipeline.
+
+For example, `MAX_STREAMS=3`, `STREAM_MEMORY_LIMIT=1G`, and `STREAM_CPU_LIMIT=1.0` are illustrative settings, not a measured guarantee. Tested profiles for 1, 2, and 3 streams, including simultaneous starts, belong to the final sizing step.
+
+### 12.5 Errors and cancellation
+
+Extend the existing JSON error envelope with release metadata: `{ "status": <http-status>, "error": <message>, "version": <version>, "commit": <commit> }`. The metadata headers from §12.2 apply to errors too. Redacted diagnostic `details` may accompany startup/internal failures; API keys and proxy/source credentials must never be returned or logged unredacted.
+
+| Request/outcome                                       | Status | Error or response                                                              |
+| ----------------------------------------------------- | ------ | ------------------------------------------------------------------------------ |
+| Missing/invalid API key                               | `401`  | Existing authentication error                                                  |
+| Invalid, empty, repeated, or conflicting source input | `400`  | Validation error identifying the invalid source parameter(s)                   |
+| New source when capacity is exhausted                 | `503`  | `Stream capacity reached`                                                      |
+| Startup/extraction/readiness failure                  | `500`  | `Failed to start stream`; all joined requests receive the same failure outcome |
+| Startup explicitly cancelled by DELETE                | `409`  | `Stream startup cancelled`; applies to creation requests awaiting that startup |
+| Unknown/removed ID for state or DELETE                | `404`  | `Stream not found`                                                             |
+| Playback by unknown, removed, or not-yet-ready ID     | `404`  | `Stream not active`                                                            |
+| Successful DELETE after cleanup                       | `204`  | Empty body                                                                     |
+| Teardown/internal operation fails                     | `500`  | `Internal Server Error`; cleanup reservation is not released prematurely       |
+| Unsupported method on an existing API route           | `405`  | Include `Allow` for that route; no POST fallback                               |
+
+Only the first DELETE that finds the entry initiates teardown and waits for it. Because public removal is immediate, later/concurrent DELETEs receive `404`; they do not emit duplicate terminal events. A successful DELETE means child processes have exited, not that historical state is retained. The health monitor's independent rate limiting and its `429` responses remain unchanged.
+
+### 12.6 Migration and delivery
+
+This is a breaking API cutover, with no singular-route compatibility alias:
+
+- `/api/stream` (GET and DELETE) is removed and returns `404`; clients change their start-and-play links to `/api/streams`.
+- Direct `/stream` playback is removed and returns `404`. Players follow the creation redirect to `/stream/<id>`, or use `/api/streams/:id` while that entry is active.
+- There is no default stream, no arbitrary first-map-entry alias, and no collection-wide stop operation.
+- `/api/state` is removed and returns `404`. The health service moves its authenticated stream check to `/api/streams`; clients needing pipeline/mount state use `/api/streams/:id/state`.
+- IDs and registry contents are ephemeral. After a stop or application restart, an old playback/state ID returns `404`; starting again allocates a fresh ID.
+
+The integration branch is `feat/multi-stream-7`. Topic branches start from it and PRs target it, not `main`. The delivery sequence is:
+
+1. Finalize this API/lifecycle contract.
+2. Normalize YouTube source inputs.
+3. Parameterize Icecast mountpoints.
+4. Enable dynamic audio routing and listener limits.
+5. Configure stream-container resource limits.
+6. Introduce the registry and isolated lifecycle/removal/logging.
+7. Add per-video startup/teardown coordination.
+8. Enforce capacity accounting and rejection.
+9. Implement listing and per-stream state models.
+10. Wire plural GET APIs, bootstrap cutover, health-probe migration, and legacy-route removal.
+11. Wire per-stream DELETE.
+12. Verify end-to-end multi-stream behavior.
+13. Measure resource sizing and finish operator guidance.
+
+Preparatory work remains testable against the existing orchestration; default mountpoint behavior can remain until the API cutover. Each step includes focused tests and relevant design updates. Persistence, per-user ownership, automatic eviction, and new crash-recovery behavior are out of scope.

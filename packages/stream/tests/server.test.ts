@@ -6,7 +6,7 @@ import type { StreamStatus } from '../src/status';
 import type { Stream } from '../src/stream';
 
 const KEY = 'test-api-key';
-const VALID_URL = 'https://youtube.com/watch?v=abc123';
+const VALID_URL = 'https://youtube.com/watch?v=r_SV26dPwuA';
 
 const config = new Config({ API_KEY: KEY });
 
@@ -126,6 +126,20 @@ describe('Stream server', () => {
       start();
 
       expect((await request('/api/stream?url=not-a-url')).status).toBe(400);
+    });
+
+    test.each([
+      'https://youtube.com/watch?v=abc123',
+      'https://youtu.be/r_SV26dPwuA/extra',
+      'https://youtube.com/live/r_SV26dPwuA/extra'
+    ])('rejects malformed source %s before starting a pipeline', async (url) => {
+      const startStream = mock(async () => {});
+      start(makeDeps({ stream: { start: startStream } }));
+
+      const response = await request(`/api/stream?url=${encodeURIComponent(url)}`);
+
+      expect(response.status).toBe(400);
+      expect(startStream).not.toHaveBeenCalled();
     });
 
     test('a start failure returns 500 with details', async () => {
