@@ -141,8 +141,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: "256M"
+          cpus: "${STREAM_CPU_LIMIT:-0.5}"
+          memory: "${STREAM_MEMORY_LIMIT:-256M}"
 
   health:
     build:

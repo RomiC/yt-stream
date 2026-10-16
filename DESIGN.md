@@ -356,6 +356,8 @@ The API key is never logged (constant-time compare + URL redaction, see §3.1). 
 
 Every application container: non-root user, read-only root filesystem (tmpfs `/tmp` for scratch), `cap_drop: ALL`, `no-new-privileges: true`, resource limits (CPU/memory), log rotation (json-file, 10 MB × 3). Icecast runs as the image's own `icecast2` user (101:102): the root+sudo `/start.sh` entrypoint is bypassed (sudo needs `CAP_SETUID`), and the compose command patches credentials and `max-listeners` into a tmpfs copy of the config (`/etc/icecast2` stays intact — `/usr/share/icecast2` web/admin files symlink into it).
 
+The stream container's memory and CPU limits are configurable through Compose-only `STREAM_MEMORY_LIMIT` (default `256M`) and `STREAM_CPU_LIMIT` (default `0.5`). Both source-built and release deployments use the same limits. Unset or empty values select the defaults; overrides use Compose's resource formats and are not passed into shared `Config` or the application environment. Limits cover Bun and its streamlink/ffmpeg children together, independently of stream-count capacity. Changing limits requires container recreation and interrupts active playback. Other containers retain their fixed limits; measured multi-stream sizing remains deferred to §12.4.
+
 ### 7.6 CI scanning
 
 `bun audit` (gates on `critical`), gitleaks, GitHub **CodeQL** (default setup) for static analysis, **Dependabot** security updates for app-dependency CVEs, Dependabot version updates for Bun and GitHub Actions.
@@ -530,7 +532,7 @@ Metadata callbacks, process exits, and TTL expiry operate on their owning genera
 
 `MAX_STREAMS` is a positive base-10 integer, default `1`. Invalid, zero, negative, or fractional values fail configuration at startup rather than silently falling back. It limits starting, streaming, and still-cleaning-up pipelines together. Reserve before process spawn; release only after confirmed cleanup. Reusing an existing streaming/starting entry requires no additional slot, even at capacity. New streams at capacity receive `503`; there is no implicit eviction or global operation-in-progress `429`.
 
-Compose exposes independently configurable stream-container limits:
+Stream-container resource limits are already configurable in Compose (§7.5); `MAX_STREAMS` remains a target application setting for the capacity step. These settings are independent:
 
 | Setting                 | Default | Owner                                               |
 | ----------------------- | ------- | --------------------------------------------------- |

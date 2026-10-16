@@ -287,9 +287,13 @@ Everything is configured via environment variables (see `.env.example`):
 | `ICECAST_ADMIN_PASSWORD`  | `admin`            | Admin API auth (internal polling; also used by the health probe)                                         |
 | `ICECAST_MAX_LISTENERS`   | `2`                | Per-mount listener cap, enforced by Icecast alone                                                        |
 | `STREAM_TTL_MINUTES`      | `15`               | Auto-stop after N minutes with zero listeners                                                            |
+| `STREAM_MEMORY_LIMIT`     | `256M`             | Stream-container memory limit (Compose only)                                                             |
+| `STREAM_CPU_LIMIT`        | `0.5`              | Stream-container CPU limit in CPU cores (Compose only)                                                   |
 | `PROXY_FILE`              | `./proxy.json`     | **Host** path to the proxy list; mounted read-only into the container as `/app/proxy.json`               |
 | `STREAMLINK_QUALITY`      | `audio_only,worst` | streamlink quality priority list                                                                         |
 | `LOG_LEVEL`               | `info`             | log level — one of `debug`, `info`, `warn`, `error`, `fatal`                                             |
+
+`STREAM_MEMORY_LIMIT` and `STREAM_CPU_LIMIT` apply to the whole stream container, including Bun, streamlink, and ffmpeg, in both source-built and release deployments. Unset or empty values use the defaults. Use Compose memory units (for example, `512M`) and a positive CPU value (for example, `1.0`). Set them in the deployment's `.env` or shell environment; they are not passed to the application. Changing them requires recreating the stream container, interrupting active playback. Increasing these limits does not enable concurrent streams. No multi-stream sizing profile has been measured yet; an OOM kill can interrupt every pipeline in the container.
 
 Container-internal ports are fixed and not configurable — see [DESIGN.md](DESIGN.md).
 
