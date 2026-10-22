@@ -8,10 +8,15 @@ export const Event = {
 
 export type StreamStopReason = 'manual' | 'replaced' | 'process-exit' | 'ttl' | 'start-failed';
 
+export interface StreamIdentity {
+  id: string;
+  videoId: string;
+}
+
 export interface EventPayloads {
-  [Event.streamStarted]: { url: string };
-  [Event.streamStopped]: { url: string; reason: StreamStopReason };
-  [Event.streamError]: { url: string; error: string };
+  [Event.streamStarted]: { id: string };
+  [Event.streamStopped]: { id: string; reason: StreamStopReason };
+  [Event.streamError]: { id: string; error: string };
 }
 
 export type StreamEvent = keyof EventPayloads;

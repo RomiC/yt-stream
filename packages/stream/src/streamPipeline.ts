@@ -22,7 +22,6 @@ export interface PipelineProxies {
 }
 
 export interface StreamPipelineOptions {
-  id: number;
   url: string;
   streamlinkQuality: string;
   proxies: PipelineProxies;
@@ -31,13 +30,7 @@ export interface StreamPipelineOptions {
   logger: Logger;
 }
 
-/**
- * One stream generation: owns a fresh streamlink/ffmpeg pair per start attempt,
- * the TTL watcher and the Icecast client, plus the url/startedAt identity.
- * It emits no events — Stream observes it via onExit/onExpired.
- */
 export class StreamPipeline {
-  #id: number;
   #url: string;
   #startedAt: number | null = null;
   #streamlink: Streamlink | null = null;
@@ -52,18 +45,13 @@ export class StreamPipeline {
   #exitCallbacks: ((exit: ProcessExit) => void)[] = [];
   #lastExit: ProcessExit | null = null;
 
-  constructor({ id, url, streamlinkQuality, proxies, streamTtlMinutes, icecast, logger }: StreamPipelineOptions) {
-    this.#id = id;
+  constructor({ url, streamlinkQuality, proxies, streamTtlMinutes, icecast, logger }: StreamPipelineOptions) {
     this.#url = url;
     this.#streamlinkQuality = streamlinkQuality;
     this.#proxies = proxies;
     this.#logger = logger;
     this.#ttlWatcher = new TTLWatcher({ streamTtlMinutes, icecast });
     this.#icecast = icecast;
-  }
-
-  get id(): number {
-    return this.#id;
   }
 
   get url(): string {
@@ -113,19 +101,22 @@ export class StreamPipeline {
     return this.phase === 'streaming';
   }
 
-  async start(sourceUrl: string): Promise<void> {
+  async start(sourceUrl: string, signal?: AbortSignal): Promise<void> {
     this.#ready = false;
     const proxyRotation = this.#proxies.pickProxies();
     let lastError: unknown;
     for (let attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+      signal?.throwIfAborted();
       try {
-        await this.#startAttempt(sourceUrl, attempt, proxyRotation.next().value ?? null);
+        await this.#startAttempt(sourceUrl, attempt, proxyRotation.next().value ?? null, signal);
+        signal?.throwIfAborted();
         this.#ready = true;
         this.#startedAt = Date.now();
         return;
       } catch (err) {
         lastError = err;
         await this.#killProcesses();
+        signal?.throwIfAborted();
         if (attempt < START_ATTEMPTS) {
           await this.#icecast.prepareMountPoint();
         }
@@ -146,7 +137,7 @@ export class StreamPipeline {
     };
   }
 
-  async #startAttempt(sourceUrl: string, attempt: number, proxy: string | null): Promise<void> {
+  async #startAttempt(sourceUrl: string, attempt: number, proxy: string | null, signal?: AbortSignal): Promise<void> {
     this.#lastExit = null;
     this.#lastProxy = proxy ? redactProxy(proxy) : null;
     this.#logger.info({ attempt, maxAttempts: START_ATTEMPTS, proxy: this.#lastProxy }, 'starting streamlink');
@@ -155,16 +146,17 @@ export class StreamPipeline {
       .spawnProcess(this.#url, proxy);
     this.#ffmpeg = new Ffmpeg().onExit((exit) => this.#onWrapperExit(exit)).spawnProcess(sourceUrl);
     this.#streamlink.pipe(this.#ffmpeg);
-    await this.#waitReady();
+    await this.#waitReady(signal);
   }
 
   async #killProcesses(): Promise<void> {
     await Promise.all([this.#streamlink?.kill() ?? false, this.#ffmpeg?.kill() ?? false]);
   }
 
-  async #waitReady(): Promise<void> {
+  async #waitReady(signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + MOUNTPOINT_TIMEOUT;
     while (true) {
+      signal?.throwIfAborted();
       if (!this.#streamlink?.isAlive() || !this.#ffmpeg?.isAlive()) {
         throw this.#exitError(this.#lastExit);
       }

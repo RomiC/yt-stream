@@ -16,22 +16,19 @@ export interface StreamOptions {
   proxies: ProxyList;
 }
 
-/**
- * Orchestrates the pipeline: streamlink → ffmpeg → Icecast.
- * The active generation is a StreamPipeline held in `#currentPipeline` (live
- * pipelines live in `#pipelines`, keyed by id; a stepping stone to multi-stream).
- */
+interface ActiveStream {
+  id: string;
+  pipeline: StreamPipeline;
+}
+
 export class Stream {
   #logger: Logger;
   #icecast: IcecastClient;
   #events: EventBus;
-  #pipelineId = 0;
   #pipelineOptions: { streamlinkQuality: string; streamTtlMinutes: number; proxies: ProxyList };
-  #pipelines = new Map<number, StreamPipeline>();
-  // Sets whose teardown has been accounted — a repeated teardown (e.g. a late
-  // process-exit after a manual stop) must not emit stream:stopped twice.
-  #finalizedSets = new WeakSet<StreamPipeline>();
-  #currentPipeline: StreamPipeline | null = null;
+  // A late process exit after teardown must not emit stream:stopped twice.
+  #finalizedPipelines = new WeakSet<StreamPipeline>();
+  #currentStream: ActiveStream | null = null;
   #lastUrl: string | null = null;
 
   constructor({ config, logger, events, proxies }: StreamOptions) {
@@ -57,51 +54,52 @@ export class Stream {
   }
 
   async start(youtubeUrl: string): Promise<void> {
-    if (this.#currentPipeline?.isStreaming() && this.#currentPipeline.url === youtubeUrl) {
+    if (this.#currentStream?.pipeline.isStreaming() && this.#currentStream.pipeline.url === youtubeUrl) {
       return; // same URL already streaming
     }
 
     this.#lastUrl = youtubeUrl;
 
-    if (this.#currentPipeline) {
-      const old = this.#currentPipeline;
-      await this.#stopPipeline(old, 'replaced');
+    if (this.#currentStream) {
+      await this.#stopStream(this.#currentStream, 'replaced');
     }
 
+    const id = crypto.randomUUID();
     try {
       await this.#icecast.prepareMountPoint();
-      const pipeline = this.#createPipeline(youtubeUrl);
-      this.#currentPipeline = pipeline;
+      const stream = this.#createStream(youtubeUrl, id);
+      this.#currentStream = stream;
 
-      await pipeline.start(this.#icecast.sourceUrl);
-      pipeline.ttlWatcher.watch(youtubeUrl);
+      await stream.pipeline.start(this.#icecast.sourceUrl);
+      stream.pipeline.ttlWatcher.watch(youtubeUrl);
 
       this.#updateMetadata(youtubeUrl);
-      this.#events.emit(Event.streamStarted, { url: youtubeUrl });
+      this.#logger.info({ id, url: youtubeUrl }, 'stream started');
+      this.#events.emit(Event.streamStarted, { id });
     } catch (err) {
       this.#logger.error(
-        { err: (err as Error).message, proxy: this.#currentPipeline?.lastProxy ?? null },
+        {
+          id,
+          url: youtubeUrl,
+          err: (err as Error).message,
+          proxy: this.#currentStream?.pipeline.lastProxy ?? null
+        },
         'failed to start stream'
       );
-      const failed = this.#currentPipeline;
-      await this.#stopPipeline(failed, 'start-failed');
-      this.#currentPipeline = null;
-      this.#events.emit(Event.streamError, { url: youtubeUrl, error: (err as Error).message });
+      await this.#stopStream(this.#currentStream, 'start-failed');
+      this.#currentStream = null;
+      this.#events.emit(Event.streamError, { id, error: (err as Error).message });
       throw err;
     }
   }
 
   async stop(): Promise<void> {
-    if (!this.#currentPipeline) {
-      return;
-    }
-    const pipeline = this.#currentPipeline;
-    await this.#stopPipeline(pipeline, 'manual');
+    await this.#stopStream(this.#currentStream, 'manual');
   }
 
   async getStatus(): Promise<StreamStatus> {
     const icecastStatus = await this.#icecast.getStatus();
-    const current = this.#currentPipeline;
+    const current = this.#currentStream?.pipeline ?? null;
     const processes: { streamlink: ProcessStatus; ffmpeg: ProcessStatus } = current
       ? current.getStatus()
       : { streamlink: { status: 'stopped' }, ffmpeg: { status: 'stopped' } };
@@ -120,55 +118,45 @@ export class Stream {
     };
   }
 
-  #createPipeline(url: string): StreamPipeline {
+  #createStream(url: string, id: string): ActiveStream {
     const pipeline = new StreamPipeline({
-      id: ++this.#pipelineId,
       url,
       ...this.#pipelineOptions,
       icecast: this.#icecast,
       logger: this.#logger
     });
-    pipeline.onExit((exit) => this.#onProcessExited(pipeline, exit));
-    pipeline.onExpired(() => this.#onTtlExpired(pipeline));
-    this.#pipelines.set(pipeline.id, pipeline);
-    return pipeline;
+    const stream = { id, pipeline };
+    pipeline.onExit((exit) => this.#onProcessExited(stream, exit));
+    pipeline.onExpired(() => this.#stopStream(stream, 'ttl'));
+    return stream;
   }
 
-  #discardPipeline(set: StreamPipeline): void {
-    this.#pipelines.delete(set.id);
-  }
-
-  /**
-   * Tears down `set` (its own processes), removes it from the live-pipelines
-   * map, and — only if it is still the current stream and was streaming —
-   * emits stream:stopped. Finalized sets are skipped.
-   */
-  async #stopPipeline(set: StreamPipeline | null = this.#currentPipeline, reason: StreamStopReason): Promise<void> {
-    if (!set || this.#finalizedSets.has(set)) {
+  async #stopStream(stream: ActiveStream | null, reason: StreamStopReason): Promise<void> {
+    if (!stream || this.#finalizedPipelines.has(stream.pipeline)) {
       return;
     }
-    const isLiveStream = set.hasStarted;
-    await set.stop();
-    this.#finalizedSets.add(set);
-    this.#discardPipeline(set);
-    if (this.#currentPipeline === set && isLiveStream) {
-      this.#currentPipeline = null;
-      this.#events.emit(Event.streamStopped, { reason, url: set.url });
+    const { id, pipeline } = stream;
+    const isLiveStream = pipeline.hasStarted;
+    await pipeline.stop();
+    this.#finalizedPipelines.add(pipeline);
+    if (this.#currentStream === stream && isLiveStream) {
+      this.#currentStream = null;
+      this.#logger.info({ id, url: pipeline.url, reason }, 'stream stopped');
+      this.#events.emit(Event.streamStopped, { id, reason });
     }
   }
 
-  async #onProcessExited(set: StreamPipeline, exit: ProcessExit): Promise<void> {
+  async #onProcessExited(stream: ActiveStream, exit: ProcessExit): Promise<void> {
     // Mid-start exits are owned by the start retry loop (rotation + attribution).
-    if (!set.hasStarted) {
+    if (!stream.pipeline.hasStarted) {
       return;
     }
     const { how, tail } = describeExit(exit);
-    this.#logger.error({ cmd: exit.cmd, exit: how, tail }, 'unexpected process exit');
-    await this.#stopPipeline(set, 'process-exit');
-  }
-
-  async #onTtlExpired(set: StreamPipeline): Promise<void> {
-    await this.#stopPipeline(set, 'ttl');
+    this.#logger.error(
+      { id: stream.id, url: stream.pipeline.url, cmd: exit.cmd, exit: how, tail },
+      'unexpected process exit'
+    );
+    await this.#stopStream(stream, 'process-exit');
   }
 
   async #updateMetadata(youtubeUrl: string): Promise<void> {
@@ -181,9 +169,9 @@ export class Stream {
 
     if (
       metadata &&
-      this.#currentPipeline &&
-      this.#currentPipeline.phase === 'streaming' &&
-      this.#currentPipeline.url === youtubeUrl
+      this.#currentStream &&
+      this.#currentStream.pipeline.phase === 'streaming' &&
+      this.#currentStream.pipeline.url === youtubeUrl
     ) {
       await this.#icecast.setMetadata(`${metadata.author_name} - ${metadata.title}`);
     }
