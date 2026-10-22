@@ -41,7 +41,6 @@ class FakeStreamPipeline {
   expiredCallbacks: (() => void)[] = [];
   startCalls: string[] = [];
   stopCalls = 0;
-  id: number;
   url: string;
   phase = 'idle';
   hasStarted = false;
@@ -49,8 +48,7 @@ class FakeStreamPipeline {
   startError: Error | null = null;
   ttlWatcher: { watched: string[]; stops: number; watch: (url: string) => void; stop: () => void };
 
-  constructor(options: { id: number; url: string }) {
-    this.id = options.id;
+  constructor(options: { url: string }) {
     this.url = options.url;
     this.ttlWatcher = {
       watched: [],
@@ -181,7 +179,7 @@ describe('Stream', () => {
       expect(app.pipeline.startCalls).toEqual([SOURCE_URL]);
       expect(app.pipeline.ttlWatcher.watched).toEqual([URL_UNDER_TEST]);
       expect(onStarted.mock.calls.length).toBe(1);
-      expect(onStarted.mock.calls[0][0]).toEqual({ url: URL_UNDER_TEST });
+      expect(onStarted.mock.calls[0][0]).toEqual({ id: expect.any(String) });
       expect((await app.stream.getStatus()).general.state).toBe('streaming');
     });
 
@@ -245,7 +243,10 @@ describe('Stream', () => {
 
       expect(app.pipeline.stopCalls).toBe(1);
       expect(onError.mock.calls.length).toBe(1);
-      expect((onError.mock.calls[0][0] as { url: string }).url).toBe(URL_UNDER_TEST);
+      expect(onError.mock.calls[0][0]).toEqual({
+        id: expect.any(String),
+        error: 'streamlink exited before the mountpoint became active'
+      });
       expect((await app.stream.getStatus()).general.state).toBe('idle');
     });
 
@@ -267,8 +268,15 @@ describe('Stream', () => {
     test('replacing a stream: records the old one as replaced, then starts anew', async () => {
       const app = createStream();
       const order: string[] = [];
-      app.events.on(Event.streamStarted, ({ url }) => order.push(`started:${url.slice(-3)}`));
-      app.events.on(Event.streamStopped, ({ url, reason }) => order.push(`stopped:${url.slice(-3)}:${reason}`));
+      const urls = new Map<string, string>();
+      app.events.on(Event.streamStarted, ({ id }) => {
+        const url = pipelineInstances.at(-1)!.url;
+        urls.set(id, url);
+        order.push(`started:${url.slice(-3)}`);
+      });
+      app.events.on(Event.streamStopped, ({ id, reason }) =>
+        order.push(`stopped:${urls.get(id)!.slice(-3)}:${reason}`)
+      );
       const prepare = vi.fn(async () => {});
       app.icecast.prepareMountPoint = prepare;
 
@@ -301,9 +309,13 @@ describe('Stream', () => {
       await expect(app.stream.start('https://youtube.com/watch?v=def')).rejects.toThrow(/old source still connected/);
 
       expect(onStopped.mock.calls.length).toBe(1);
-      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'replaced', url: 'https://youtube.com/watch?v=abc' });
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'replaced', id: expect.any(String) });
       expect(onError.mock.calls.length).toBe(1);
-      expect((onError.mock.calls[0][0] as { url: string }).url).toBe('https://youtube.com/watch?v=def');
+      expect(onError.mock.calls[0][0]).toEqual({
+        id: expect.any(String),
+        error: 'old source still connected to the mountpoint'
+      });
+      expect(onError.mock.calls[0][0].id).not.toBe(onStopped.mock.calls[0][0].id);
       expect((await app.stream.getStatus()).general.state).toBe('idle');
     });
   });
@@ -324,7 +336,7 @@ describe('Stream', () => {
       await app.stream.stop();
 
       expect(onStopped.mock.calls.length).toBe(1);
-      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'manual', url: URL_UNDER_TEST });
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'manual', id: expect.any(String) });
       expect(app.pipeline.stopCalls).toBe(1);
       expect(app.pipeline.ttlWatcher.stops).toBe(1);
       expect((await app.stream.getStatus()).general.state).toBe('idle');
@@ -340,6 +352,32 @@ describe('Stream', () => {
   });
 
   describe('events', () => {
+    test('events carry only a stable ID while lifecycle logs retain source context', async () => {
+      const logger = captureLogger();
+      const app = createStream(logger);
+      const onStarted = vi.fn();
+      const onStopped = vi.fn();
+      app.events.on(Event.streamStarted, onStarted);
+      app.events.on(Event.streamStopped, onStopped);
+
+      await app.stream.start(URL_UNDER_TEST);
+      const id = onStarted.mock.calls[0][0].id;
+      expect(onStarted.mock.calls[0][0]).toEqual({ id });
+      expect(id).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+      expect(logger.entries.filter((entry) => entry.msg === 'stream started')).toEqual([
+        { level: 'info', msg: 'stream started', id, url: URL_UNDER_TEST }
+      ]);
+
+      await app.stream.stop();
+      expect(onStopped.mock.calls[0][0]).toEqual({ id, reason: 'manual' });
+      expect(logger.entries.filter((entry) => entry.msg === 'stream stopped')).toEqual([
+        { level: 'info', msg: 'stream stopped', id, url: URL_UNDER_TEST, reason: 'manual' }
+      ]);
+
+      await app.stream.start(URL_UNDER_TEST);
+      expect(onStarted.mock.calls[1][0].id).not.toBe(id);
+    });
+
     test('unexpected process exit emits stream:stopped with reason process-exit', async () => {
       const app = createStream();
       const onStopped = vi.fn();
@@ -350,7 +388,7 @@ describe('Stream', () => {
       await flushAsync();
 
       expect(onStopped.mock.calls.length).toBe(1);
-      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'process-exit', url: URL_UNDER_TEST });
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'process-exit', id: expect.any(String) });
       expect(app.pipeline.ttlWatcher.stops).toBe(1);
     });
 
@@ -364,7 +402,7 @@ describe('Stream', () => {
       await flushAsync();
 
       expect(onStopped.mock.calls.length).toBe(1);
-      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'ttl', url: URL_UNDER_TEST });
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'ttl', id: expect.any(String) });
     });
 
     test('a stale TTL teardown does not stop a replacement stream', async () => {
@@ -411,7 +449,7 @@ describe('Stream', () => {
       await flushAsync();
 
       expect(onStopped.mock.calls.length).toBe(1);
-      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'process-exit', url: URL_UNDER_TEST });
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'process-exit', id: expect.any(String) });
       expect((await app.stream.getStatus()).general.state).toBe('idle');
     });
 

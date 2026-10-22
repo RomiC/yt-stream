@@ -21,6 +21,7 @@ Sections 1–11 describe the current implementation. [Section 12](#12-multi-stre
   - [4.3 Failure semantics & auto-stop](#43-failure-semantics--auto-stop)
   - [4.4 Timeout and retry reference](#44-timeout-and-retry-reference)
   - [4.5 Failure and recovery matrix](#45-failure-and-recovery-matrix)
+  - [4.6 Registry groundwork](#46-registry-groundwork)
 - [5. Event bus](#5-event-bus)
 - [6. Health monitoring (#18)](#6-health-monitoring-18)
 - [7. Security design](#7-security-design)
@@ -90,7 +91,8 @@ packages/
 │   ├── statusReport.ts         # /api/state snapshot + ok/failure verdict
 │   ├── status.ts               # stream/probe status types
 │   ├── streamPipeline.ts       # one stream generation: fresh streamlink/ffmpeg pair per attempt, readiness, TTL
-│   ├── stream.ts               # orchestration: replace/stop pipelines, event accounting, health snapshot
+│   ├── stream.ts               # current single-stream orchestration, health snapshot
+│   ├── streamRegistry.ts       # internal UUID registry: independent pipeline/mount ownership and removal
 │   ├── ttlWatcher.ts           # zero-listener TTL: polls Icecast, notifies owner via onExpired
 │   ├── withAuth.ts             # API-key validation decorator
 │   ├── withLock.ts             # single-operation concurrency lock (429)
@@ -222,7 +224,7 @@ For URL inputs, the resolver calls `isValidYoutubeUrl` once and, only on success
 
 URL acceptance does **not** guarantee extraction: the pinned streamlink YouTube plugin must find a playable stream using `STREAMLINK_QUALITY` (default `audio_only,worst`), and YouTube must allow access from the selected exit IP. There is no application-level cookies/login configuration for restricted sources. The API does not distinguish live from finite sources: it runs whatever streamlink extracts. A finite source ending cleanly stops the pipeline with `process-exit`, just like another child-process exit; it does not loop or resume.
 
-The URL forms and lifecycle handling are covered by unit tests; automated end-to-end extraction against real YouTube live streams and finite videos is not currently covered. The Compose stack also pins Icecast to `linux/amd64`; an ARM host needs amd64 emulation support.
+The URL forms and lifecycle handling are covered by unit tests. Automated end-to-end coverage against real YouTube sources is not currently provided. The Compose stack also pins Icecast to `linux/amd64`; an ARM host needs amd64 emulation support.
 
 ---
 
@@ -230,7 +232,7 @@ The URL forms and lifecycle handling are covered by unit tests; automated end-to
 
 ### 4.1 No state machine
 
-There is no explicit state machine. Each generation is a `StreamPipeline` that owns the TTL watcher, the `IcecastClient`, and the current streamlink/ffmpeg pair — a **fresh pair per start attempt**: a wrapper instance mirrors exactly one process, so a retry constructs new instances. `Stream` keeps a map of live pipelines (`#pipelines`, keyed by id — a stepping stone to a future multi-stream design) and a `#currentPipeline` pointer to the active one. The pipeline's phase is **derived, not stored** — process liveness plus a readiness flag set once mount activation succeeds:
+There is no explicit state machine. Each generation is a `StreamPipeline` that owns the TTL watcher, the `IcecastClient`, and the current streamlink/ffmpeg pair — a **fresh pair per start attempt**: a wrapper instance mirrors exactly one process, so a retry constructs new instances. `Stream` keeps a single active record pairing its lifecycle event ID with the pipeline. Each registry entry likewise owns exactly one pipeline; pipelines have no separate ID. Callbacks retain their owning record, and object identity guards against stale callbacks. The pipeline's phase is **derived, not stored** — process liveness plus a readiness flag set once mount activation succeeds:
 
 - `starting` — processes alive, startup readiness not yet confirmed
 - `streaming` — processes alive, startup readiness confirmed
@@ -300,19 +302,34 @@ Compose uses `restart: unless-stopped` for containers. This restarts crashed con
 
 A healthy `/api/state` or `/hc` response does not mean audio is playing: an idle service with reachable Icecast is healthy. Use `general.state`, process status, and Icecast mount state from `/api/state` to distinguish readiness from playback.
 
+### 4.6 Registry groundwork
+
+`StreamRegistry` is an internal, separately tested owner of multiple `StreamPipeline` instances. It is not wired into `index.ts` or the HTTP server: the existing single-stream routes, replacement semantics, and health probe remain unchanged until API cutover.
+
+- `create(videoId)` accepts an already validated video identity, constructs its canonical YouTube URL, and synchronously registers a cryptographically random UUID before asynchronous work. It allocates a distinct Icecast client at `/stream/<id>` and waits for mount preparation and pipeline readiness before resolving an immutable identity record. Each entry owns one pipeline, identified by its object reference rather than a separate numeric ID.
+- `get(id)` and `findByVideoId(videoId)` read identity records without probing Icecast or awaiting startup/cleanup. These are internal lookups, not playback-readiness decisions or the final API listing/state models. Video identity is case-sensitive. Duplicate `create` calls currently reject while that video is registered or cleaning up; find-or-create reuse, startup joining, and waiting through teardown belong to the next coordination step.
+- Each entry owns its pipeline, mount client, abort controller, startup promise, and shared cleanup promise. The pipeline still owns raw child processes, retries, derived phase, and its TTL watcher. Metadata, mount readiness, listener polling, and TTL are scoped to that entry's mount.
+- Manual stop, TTL expiry, process exit, and failed startup hide the entry immediately. Cleanup stops its watcher and children, waits for raw startup to settle, and releases the temporary video exclusion only after cleanup succeeds. Failed cleanup is logged and keeps that internal exclusion; it never restores a public entry or permits a replacement generation prematurely. No stopped-stream history is retained.
+- Pipeline startup accepts an optional abort signal. Checks around readiness and retry boundaries prevent removed generations from spawning another attempt or publishing late readiness. In-flight Icecast operations retain their existing timeouts; cancellation prevents subsequent work rather than interrupting those HTTP requests. Cleanup waits on raw startup, not the outer creation promise whose error handler joins cleanup.
+- Late metadata results and stale exit/TTL callbacks are ignored once their entry has been removed. First removal owns teardown and terminal event accounting; subsequent callbacks do not produce duplicate outcomes. Registry, pipeline, and Icecast logs carry public `id` and `videoId`; lifecycle events carry only the public `id` plus a terminal reason or error when applicable. The announcement flag tracks event delivery only, not a stored pipeline phase.
+
+There is no registry capacity limit or `MAX_STREAMS` configuration yet. Resource limits are configured independently (§7.5). HTTP listing/state schemas, request-level coordination, capacity accounting, and bootstrap replacement remain later delivery steps (§12.6).
+
 ---
 
 ## 5. Event bus
 
-A small pub/sub bus carries the outward stream lifecycle notifications. `Stream` is the only emitter; `index.ts` (logging) the only consumer. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for exits the owner did not cause (owner kills stay silent).
+A small pub/sub bus carries outward stream lifecycle notifications. Both the bootstrapped `Stream` and the internal `StreamRegistry` emit the same ID-only contract. Lifecycle owners log full source context directly; `index.ts` no longer subscribes merely to reconstruct lifecycle logs. Internal concerns (process exits, TTL expiry) are observed directly via the per-pipeline `onExit`/`onExpired` callbacks, never through the bus. `onExit` fires only for exits the owner did not cause (owner kills stay silent).
 
-| Event            | Emitted by | Consumed by | Payload                                                      |
-| ---------------- | ---------- | ----------- | ------------------------------------------------------------ |
-| `stream:started` | stream     | logging     | `{ url }`                                                    |
-| `stream:stopped` | stream     | logging     | `{ url, reason: manual \| replaced \| process-exit \| ttl }` |
-| `stream:error`   | stream     | logging     | `{ url, error }`                                             |
+| Event            | Emitted by        | Payload          |
+| ---------------- | ----------------- | ---------------- |
+| `stream:started` | Stream / registry | `{ id }`         |
+| `stream:stopped` | Stream / registry | `{ id, reason }` |
+| `stream:error`   | Stream / registry | `{ id, error }`  |
 
-Every pipeline teardown declares its reason. Operational logging flows through the shared JSON logger: `Stream` reports lifecycle transitions; collaborators report their own low-level facts directly (pipeline attempt starts, Icecast poll failures).
+Event IDs are required, opaque UUIDs; payloads contain no YouTube URL, video ID, or internal pipeline ID. The existing `Stream` also assigns a UUID to each start attempt and preserves it across that generation's events; these IDs do not change its HTTP API or mountpoint. Consumers receive notifications by ID and must not query a removed entry merely to reconstruct logging context. Registry creation failures emit `stream:error`; other terminal causes emit `stream:stopped` once cleanup succeeds, including cancellation before a start was announced. Cleanup failures are logged without claiming a successful stop.
+
+Every pipeline teardown declares its reason. Operational logging flows through the shared JSON logger: `Stream` and `StreamRegistry` log their own lifecycle transitions; collaborators report their own low-level facts directly (pipeline attempt starts, Icecast poll failures).
 
 ---
 
@@ -451,7 +468,7 @@ All supported `/api/*` endpoints retain the authentication rules in §3.1, inclu
 Source identity and validation:
 
 - Public stream IDs are generated with built-in `crypto.randomUUID()`. They are opaque, case-sensitive lookup keys, not YouTube IDs or sequential counters. Randomness reduces guessing, not the need for authentication.
-- Deduplicate by the case-sensitive YouTube video ID. Keep internal pipeline-generation identity separate from public identity to guard delayed callbacks. A newly created entry receives a new public ID, including after stopping and restarting the same video.
+- Deduplicate by the case-sensitive YouTube video ID. Each entry owns exactly one pipeline; compare entry/pipeline object references to guard delayed callbacks, without a separate generation ID. A newly created entry receives a new public ID, including after stopping and restarting the same video.
 - Exactly one of `url` or `video_id` selects find-or-create. Supplying both, repeated source parameters, or an empty supplied value is `400`; only absence of both selects listing. Authentication parameters do not select creation.
 - For full URLs, call the boolean validator `isValidYoutubeUrl` once, then call `getYoutubeVideoId` only after validation succeeds. The extractor does not validate, and its result is not revalidated. Bare `video_id` inputs are validated independently. Both forms require exactly 11 characters from `[A-Za-z0-9_-]`; video existence and extractability are not checked.
 - Source resolution returns only the video ID (or `null` for listing). Construct the pipeline and metadata URL as `https://www.youtube.com/watch?v=<video_id>` at the pipeline integration boundary. Tracking parameters, timestamps (`t`, `start`), playlist parameters, and fragments are ignored, not passed through. There is no per-request offset, playlist, or quality selection. Equivalent accepted URLs always share one stream.
@@ -524,7 +541,7 @@ For every terminal cause (`manual`, `ttl`, `process-exit`, or `start-failed`):
 2. Stop the TTL watcher and terminate/await owned children. Concurrent delete, TTL, and exit callbacks share one teardown operation.
 3. Retain only temporary internal coordination needed for cleanup, same-video exclusion, and capacity accounting. Remove those references when cleanup finishes.
 4. Release the reservation only after both processes have exited; if teardown fails, keep the reservation until cleanup can be confirmed and log the failure.
-5. Log the terminal outcome with public ID, video ID, internal generation identity, reason, and relevant process/error attribution. Account for the terminal lifecycle outcome exactly once; failed starts never emit `stream:started`.
+5. Log the terminal outcome with public ID, video ID, reason, and relevant process/error attribution. Account for the terminal lifecycle outcome exactly once; failed starts never emit `stream:started`.
 
 Metadata callbacks, process exits, and TTL expiry operate on their owning generation and mount. They cannot remove or update a later entry for the same video, or another video. A stopped entry is never archived in the registry; logs, subject to existing rotation, are the historical record. Restart/recreation restores no streams or IDs automatically.
 

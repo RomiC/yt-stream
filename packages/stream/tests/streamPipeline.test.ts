@@ -213,7 +213,6 @@ function createPipeline({
   StreamlinkFake.all = null;
   FfmpegFake.all = null;
   const pipeline = new StreamPipeline({
-    id: 1,
     url: URL_UNDER_TEST,
     streamlinkQuality: 'audio_only,worst',
     proxies,
@@ -410,6 +409,63 @@ describe('StreamPipeline', () => {
       expect(outcome).toMatch(/mountpoint never became active/);
       expect(pipeline.phase).toBe('stopped');
       jest.useRealTimers();
+    });
+  });
+
+  describe('startup cancellation', () => {
+    test('an already-aborted startup never spawns children', async () => {
+      const pipeline = createPipeline();
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled'));
+
+      await expect(pipeline.start(SOURCE_URL, controller.signal)).rejects.toThrow('cancelled');
+
+      expect(streamlinkInstances).toHaveLength(0);
+      expect(ffmpegInstances).toHaveLength(0);
+      expect(pipeline.hasStarted).toBe(false);
+    });
+
+    test('abort during a readiness probe prevents late readiness and retries', async () => {
+      const pipeline = createPipeline();
+      const gate = Promise.withResolvers<Probe>();
+      const controller = new AbortController();
+      icecast.getStatus = () => gate.promise;
+      const pending = pipeline.start(SOURCE_URL, controller.signal);
+      const outcome = pending.catch((error: Error) => error);
+      controller.abort(new Error('cancelled'));
+      await pipeline.stop();
+      gate.resolve({ icecastReachable: true, mountpointActive: true, listeners: 0 });
+      expect(await outcome).toMatchObject({ message: 'cancelled' });
+
+      expect(streamlinkInstances).toHaveLength(1);
+      expect(ffmpegInstances).toHaveLength(1);
+      expect(pipeline.hasStarted).toBe(false);
+      expect(pipeline.phase).toBe('stopped');
+      expect(icecast.prepareMountPoint).not.toHaveBeenCalled();
+    });
+
+    test('abort during retry mount preparation prevents a subsequent attempt', async () => {
+      const pipeline = createPipeline();
+      const gate = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      icecast.prepareMountPoint.mockImplementationOnce(() => gate.promise);
+      StreamlinkFake.next = {
+        spawnProcess: function (this: FakeStreamlink) {
+          this.spawned = true;
+          this.die();
+          return this;
+        }
+      };
+      const pending = pipeline.start(SOURCE_URL, controller.signal);
+      const outcome = pending.catch((error: Error) => error);
+      await flushAsync();
+      controller.abort(new Error('cancelled'));
+      gate.resolve();
+      expect(await outcome).toMatchObject({ message: 'cancelled' });
+
+      expect(streamlinkInstances).toHaveLength(1);
+      expect(pipeline.hasStarted).toBe(false);
+      expect(pipeline.phase).toBe('stopped');
     });
   });
 
