@@ -348,7 +348,7 @@ All dependencies — bun packages, Docker base images, Docker service images, an
 | Layer                    | What                                     | How                                                                                     | Update cadence               |
 | ------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------- |
 | **bun runtime deps**     | none (`yt-stream-shared` is a workspace) | `bun.lock` records resolved URL + integrity hash                                        | Dependabot (bun ecosystem)   |
-| **Docker base image**    | `alpine:3.24`                            | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.2-alpine` | When bumping Bun or Alpine   |
+| **Docker base image**    | `alpine:3.24`                            | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.4-alpine` | When bumping Bun or Alpine   |
 | **Docker service image** | `moul/icecast`, `caddy:2-alpine`         | Pinned by digest in `docker-compose.yml`                                                | When bumping Icecast / Caddy |
 | **apk packages**         | `ffmpeg`, `streamlink`                   | Exact version via compose build args                                                    | When bumping any package     |
 
