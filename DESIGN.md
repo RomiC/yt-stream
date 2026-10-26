@@ -343,14 +343,16 @@ Branch protection on `main` requires PR + passing CI.
 
 ## 8. Dependency pinning policy
 
-All dependencies — bun packages, Docker base images, Docker service images, and system packages — are pinned to exact versions for reproducible builds. Without pinning, a rebuild months later can pull a newer dependency that introduces a breaking change, security regression, or behavior shift. Digests protect against tag mutation; exact versions protect against semver surprises.
+Bun dependencies are resolved through `bun.lock`, and Docker base and service images are pinned by digest. FFmpeg and Streamlink are constrained to major-minor release lines (`ffmpeg~8.1`, `streamlink~8.4`) so builds accept patch and Alpine package-revision updates without moving to a new minor release.
+
+Alpine repositories replace old package builds, so exact apk pins can become unavailable even with a digest-pinned base image. Major-minor constraints reduce that risk but do not make rebuilds reproducible or guarantee future package availability. Deploy the resulting application images by digest to keep deployments fixed.
 
 | Layer                    | What                                     | How                                                                                     | Update cadence               |
 | ------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------- |
 | **bun runtime deps**     | none (`yt-stream-shared` is a workspace) | `bun.lock` records resolved URL + integrity hash                                        | Dependabot (bun ecosystem)   |
 | **Docker base image**    | `alpine:3.24`                            | Pinned by digest in `Dockerfile.bun`; Bun binary staged in from `oven/bun:1.4.4-alpine` | When bumping Bun or Alpine   |
 | **Docker service image** | `moul/icecast`, `caddy:2-alpine`         | Pinned by digest in `docker-compose.yml`                                                | When bumping Icecast / Caddy |
-| **apk packages**         | `ffmpeg`, `streamlink`                   | Exact version via compose build args                                                    | When bumping any package     |
+| **apk packages**         | `ffmpeg`, `streamlink`                   | Major-minor constraints via Compose and release-workflow build args                     | When changing release lines  |
 
 Resolving digests and versions:
 

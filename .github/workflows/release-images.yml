@@ -50,7 +50,7 @@ jobs:
           push: true
           build-args: |
             SERVICE=stream
-            APK_PACKAGES=ffmpeg=8.1.2-r0 streamlink=8.4.0-r0
+            APK_PACKAGES=ffmpeg~8.1 streamlink~8.4
             APP_VERSION=${{ steps.meta.outputs.version }}
             APP_COMMIT=${{ steps.meta.outputs.commit }}
           tags: |
