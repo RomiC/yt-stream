@@ -1,11 +1,11 @@
-# Bun binary staged into alpine:3.24 so the pinned ffmpeg/streamlink versions stay put
+# Stage Bun into Alpine 3.24 to keep FFmpeg/Streamlink on the selected distro release
 FROM oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a AS bun
 
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # Which workspace to build (stream | health) — set by compose build args
 ARG SERVICE
-# Optional pinned system packages (stream only), empty for health
+# Optional version-constrained system packages (stream only), empty for health
 ARG APK_PACKAGES=""
 ARG APP_VERSION="dev"
 ARG APP_COMMIT="unknown"
