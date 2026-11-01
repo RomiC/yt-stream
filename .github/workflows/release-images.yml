@@ -42,7 +42,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish stream image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/Dockerfile.bun
@@ -58,7 +58,7 @@ jobs:
             ghcr.io/romic/yt-stream-stream:sha-${{ steps.meta.outputs.commit }}
 
       - name: Build and publish health image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/Dockerfile.bun
