@@ -187,16 +187,50 @@ describe('StreamRegistry', () => {
     expect(await pending).toBe(identity);
   });
 
-  test('rejects duplicate creation without joining or spawning duplicate pipelines', async () => {
+  test('same-video callers join startup and receive one ready identity', async () => {
     const gate = Promise.withResolvers<void>();
     FakeIcecast.next = { prepareGate: gate.promise };
-    const { registry } = setup();
-    const pending = registry.create(VIDEO_A);
-    await expect(registry.create(VIDEO_A)).rejects.toThrow('Video already registered or cleaning up');
-    gate.resolve();
-    await pending;
-    await expect(registry.create(VIDEO_A)).rejects.toThrow('Video already registered or cleaning up');
+    const { registry, started } = setup();
+    const creation = registry.create(VIDEO_A);
+    const completed = mock();
+    const pending = Array.from({ length: 3 }, () => {
+      const request = registry.create(VIDEO_A);
+      expect(request).toBe(creation);
+      return request.then((stream) => {
+        completed(stream);
+        return stream;
+      });
+    });
+    await flushAsync();
+    expect(completed).not.toHaveBeenCalled();
+    expect(icecasts).toHaveLength(1);
     expect(pipelines).toHaveLength(1);
+    expect(pipelines[0].start).not.toHaveBeenCalled();
+    gate.resolve();
+    const streams = await Promise.all(pending);
+    for (const stream of streams) {
+      expect(stream).toBe(streams[0]);
+    }
+    expect(icecasts[0].prepareMountPoint).toHaveBeenCalledTimes(1);
+    expect(pipelines[0].start).toHaveBeenCalledTimes(1);
+    expect(pipelines[0].ttlWatcher.watch).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(started).toHaveBeenCalledTimes(1);
+  });
+
+  test('reuses an already-streaming video without restarting or refreshing metadata', async () => {
+    const { registry, started } = setup();
+    const creation = registry.create(VIDEO_A);
+    const stream = await creation;
+    expect(registry.create(VIDEO_A)).toBe(creation);
+    expect(await registry.create(VIDEO_A)).toBe(stream);
+    expect(icecasts).toHaveLength(1);
+    expect(pipelines).toHaveLength(1);
+    expect(pipelines[0].start).toHaveBeenCalledTimes(1);
+    expect(icecasts[0].prepareMountPoint).toHaveBeenCalledTimes(1);
+    expect(pipelines[0].ttlWatcher.watch).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(started).toHaveBeenCalledTimes(1);
   });
 
   test('treats case-distinct video IDs independently', async () => {
@@ -207,22 +241,43 @@ describe('StreamRegistry', () => {
     expect(registry.findByVideoId(VIDEO_A.toLowerCase())).toBe(second);
   });
 
-  test('hides a stopping entry immediately, but keeps its video reserved until cleanup', async () => {
+  test('same-video callers wait for teardown and share one fresh entry without blocking other videos', async () => {
     const { registry, stopped } = setup();
-    const [first, second] = await Promise.all([registry.create(VIDEO_A), registry.create(VIDEO_B)]);
+    const creation = registry.create(VIDEO_A);
+    const first = await creation;
     const gate = Promise.withResolvers<void>();
     pipelines[0].stopGate = gate.promise;
     const stopping = registry.stop(first.id);
+    const restart = registry.create(VIDEO_A);
+    expect(restart).not.toBe(creation);
+    const completed = mock();
+    const pending = Array.from({ length: 3 }, () => {
+      const request = registry.create(VIDEO_A);
+      expect(request).toBe(restart);
+      return request.then((stream) => {
+        completed(stream);
+        return stream;
+      });
+    });
+    await flushAsync();
     expect(registry.get(first.id)).toBeNull();
     expect(registry.findByVideoId(VIDEO_A)).toBeNull();
-    expect(registry.get(second.id)).toBe(second);
     expect(await registry.stop(first.id)).toBe(false);
-    await expect(registry.create(VIDEO_A)).rejects.toThrow('cleaning up');
+    expect(completed).not.toHaveBeenCalled();
+    expect(pipelines).toHaveLength(1);
     expect(stopped).not.toHaveBeenCalled();
+    const second = await registry.create(VIDEO_B);
+    expect(registry.get(second.id)).toBe(second);
     gate.resolve();
     expect(await stopping).toBe(true);
-    const next = await registry.create(VIDEO_A);
-    expect(next.id).not.toBe(first.id);
+    const streams = await Promise.all(pending);
+    for (const stream of streams) {
+      expect(stream).toBe(streams[0]);
+      expect(stream.id).not.toBe(first.id);
+    }
+    expect(pipelines).toHaveLength(3);
+    expect(pipelines[0].stop).toHaveBeenCalledTimes(1);
+    expect(pipelines[2].start).toHaveBeenCalledTimes(1);
     expect(stopped).toHaveBeenCalledTimes(1);
     expect(stopped.mock.calls[0][0]).toEqual({ id: first.id, reason: 'manual' });
     expect(pipelines[1].stop).not.toHaveBeenCalled();
@@ -236,6 +291,72 @@ describe('StreamRegistry', () => {
     expect(registry.findByVideoId(VIDEO_A)).toBeNull();
     expect(setup().registry.get(stream.id)).toBeNull();
     expect(await registry.stop('unknown')).toBe(false);
+  });
+
+  test('same-video callers share startup failure and wait for its single cleanup', async () => {
+    const prepare = Promise.withResolvers<void>();
+    const cleanup = Promise.withResolvers<void>();
+    const failure = new Error('extraction failed');
+    FakeIcecast.next = { prepareGate: prepare.promise };
+    FakePipeline.next = {
+      start: mock(async () => {
+        throw failure;
+      }),
+      stopGate: cleanup.promise
+    };
+    const { registry, started, errors } = setup();
+    const creation = registry.create(VIDEO_A);
+    const completed = mock();
+    const pending = Array.from({ length: 3 }, () => {
+      const request = registry.create(VIDEO_A);
+      expect(request).toBe(creation);
+      return request.catch((error: Error) => {
+        completed(error);
+        return error;
+      });
+    });
+    const id = registry.findByVideoId(VIDEO_A)!.id;
+    prepare.resolve();
+    await flushAsync();
+    expect(registry.get(id)).toBeNull();
+    expect(completed).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
+    expect(pipelines).toHaveLength(1);
+    expect(pipelines[0].stop).toHaveBeenCalledTimes(1);
+    cleanup.resolve();
+    for (const outcome of await Promise.all(pending)) {
+      expect(outcome).toBe(failure);
+    }
+    expect(started).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(errors.mock.calls[0][0]).toEqual({ id, error: failure.message });
+    expect((await registry.create(VIDEO_A)).id).not.toBe(id);
+  });
+
+  test.each(['initial', 'restart'])('construction failure releases the creation promise (%s)', async (stage) => {
+    const { registry } = setup();
+    let stopping: Promise<boolean> | undefined;
+    if (stage === 'restart') {
+      const stream = await registry.create(VIDEO_A);
+      stopping = registry.stop(stream.id);
+    }
+    const failure = new Error('pipeline construction failed');
+    FakePipeline.next = {
+      get lastProxy(): string | null {
+        FakePipeline.next = {};
+        throw failure;
+      }
+    };
+    const creation = registry.create(VIDEO_A);
+    expect(registry.create(VIDEO_A)).toBe(creation);
+    await expect(creation).rejects.toBe(failure);
+    await stopping;
+    expect(registry.findByVideoId(VIDEO_A)).toBeNull();
+    const retry = registry.create(VIDEO_A);
+    expect(retry).not.toBe(creation);
+    const next = await retry;
+    expect(registry.get(next.id)).toBe(next);
+    expect(registry.findByVideoId(VIDEO_A)).toBe(next);
   });
 
   test('preparation failure removes only its own entry and emits one error', async () => {
@@ -274,10 +395,15 @@ describe('StreamRegistry', () => {
     await flushAsync();
     expect(registry.get(id)).toBeNull();
     expect(errors).not.toHaveBeenCalled();
-    await expect(registry.create(VIDEO_A)).rejects.toThrow('cleaning up');
+    const retry = registry.create(VIDEO_A);
+    await flushAsync();
+    expect(pipelines).toHaveLength(1);
+    expect(started).not.toHaveBeenCalled();
     cleanup.resolve();
     expect(await outcome).toMatchObject({ message: 'extraction failed' });
-    expect(started).not.toHaveBeenCalled();
+    expect(registry.create(VIDEO_A)).toBe(retry);
+    expect((await retry).id).not.toBe(id);
+    expect(pipelines).toHaveLength(2);
     expect(errors).toHaveBeenCalledTimes(1);
     expect(logs.find((log) => log.msg === 'failed to start stream')).toMatchObject({
       id,
@@ -334,6 +460,59 @@ describe('StreamRegistry', () => {
     expect(started).not.toHaveBeenCalled();
     expect(stopped).toHaveBeenCalledTimes(1);
     expect(errors).not.toHaveBeenCalled();
+  });
+
+  test('stop cancels all startup joiners while a new request waits for raw startup cleanup', async () => {
+    const gate = Promise.withResolvers<void>();
+    FakePipeline.next = { startGate: gate.promise };
+    const { registry, stopped, errors } = setup();
+    const creation = registry.create(VIDEO_A);
+    const pending = Array.from({ length: 3 }, () => {
+      const request = registry.create(VIDEO_A);
+      expect(request).toBe(creation);
+      return request.catch((error: Error) => error);
+    });
+    const id = registry.findByVideoId(VIDEO_A)!.id;
+    await flushAsync();
+    const stopping = registry.stop(id);
+    const retry = registry.create(VIDEO_A);
+    expect(retry).not.toBe(creation);
+    expect(registry.create(VIDEO_A)).toBe(retry);
+    await flushAsync();
+    expect(registry.get(id)).toBeNull();
+    expect(registry.findByVideoId(VIDEO_A)).toBeNull();
+    expect(pipelines).toHaveLength(1);
+    expect(stopped).not.toHaveBeenCalled();
+    gate.resolve();
+    await stopping;
+    const outcomes = await Promise.all(pending);
+    expect(outcomes[0]).toBeInstanceOf(StreamStartupCancelledError);
+    for (const outcome of outcomes) {
+      expect(outcome).toBe(outcomes[0]);
+    }
+    expect(registry.create(VIDEO_A)).toBe(retry);
+    const next = await retry;
+    expect(next.id).not.toBe(id);
+    expect(pipelines).toHaveLength(2);
+    expect(pipelines[0].stop).toHaveBeenCalledTimes(1);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(stopped.mock.calls[0][0]).toEqual({ id, reason: 'manual' });
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  test('creation from an abort callback waits for cleanup instead of joining the cancelled entry', async () => {
+    const { registry } = setup();
+    const stream = await registry.create(VIDEO_A);
+    const signal = pipelines[0].start.mock.calls[0][1]!;
+    let restart: Promise<unknown> | undefined;
+    signal.addEventListener('abort', () => {
+      restart = registry.create(VIDEO_A).catch((error: Error) => error);
+    });
+    await registry.stop(stream.id);
+    const next = await registry.create(VIDEO_A);
+    expect(await restart).toBe(next);
+    expect(next.id).not.toBe(stream.id);
+    expect(pipelines).toHaveLength(2);
   });
 
   test('removal from a started-event callback cannot return a removed entry to its creator', async () => {
@@ -456,16 +635,26 @@ describe('StreamRegistry', () => {
     expect(logs.find((entry) => entry.msg === 'poll failure')?.level).toBe('warn');
   });
 
-  test('cleanup failure hides the entry but retains its internal video reservation', async () => {
+  test('cleanup failure rejects waiting same-video requests without releasing the reservation', async () => {
     const { registry, stopped, logs } = setup();
     const stream = await registry.create(VIDEO_A);
+    const gate = Promise.withResolvers<void>();
+    const failure = new Error('kill failed');
     pipelines[0].stop = mock(async () => {
-      throw new Error('kill failed');
+      await gate.promise;
+      throw failure;
     });
-    await expect(registry.stop(stream.id)).rejects.toThrow('kill failed');
+    const stopping = registry.stop(stream.id).catch((error: Error) => error);
+    const waiting = registry.create(VIDEO_A).catch((error: Error) => error);
+    await flushAsync();
     expect(registry.get(stream.id)).toBeNull();
     expect(registry.findByVideoId(VIDEO_A)).toBeNull();
-    await expect(registry.create(VIDEO_A)).rejects.toThrow('cleaning up');
+    expect(pipelines).toHaveLength(1);
+    gate.resolve();
+    expect(await stopping).toBe(failure);
+    expect(await waiting).toBe(failure);
+    await expect(registry.create(VIDEO_A)).rejects.toBe(failure);
+    expect(pipelines).toHaveLength(1);
     expect(stopped).not.toHaveBeenCalled();
     expect(logs.find((entry) => entry.msg === 'stream cleanup failed')).toMatchObject({
       id: stream.id,

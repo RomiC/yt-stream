@@ -26,6 +26,11 @@ interface RegistryEntry {
   announced: boolean;
 }
 
+interface VideoRegistration {
+  entry: RegistryEntry | null;
+  creation: Promise<RegisteredStream> | null;
+}
+
 export class StreamStartupCancelledError extends Error {
   constructor() {
     super('Stream startup cancelled');
@@ -37,7 +42,7 @@ export class StreamRegistry {
   #options: StreamOptions;
   #events: EventBus;
   #entries = new Map<string, RegistryEntry>();
-  #videos = new Map<string, RegistryEntry>();
+  #videos = new Map<string, VideoRegistration>();
 
   constructor(options: StreamOptions) {
     this.#options = options;
@@ -49,15 +54,60 @@ export class StreamRegistry {
   }
 
   findByVideoId(videoId: string): RegisteredStream | null {
-    const entry = this.#videos.get(videoId);
+    const entry = this.#videos.get(videoId)?.entry;
     return entry ? this.get(entry.stream.id) : null;
   }
 
-  async create(videoId: string): Promise<RegisteredStream> {
-    if (this.#videos.has(videoId)) {
-      throw new Error('Video already registered or cleaning up');
+  create(videoId: string): Promise<RegisteredStream> {
+    let video = this.#videos.get(videoId);
+    if (!video) {
+      video = { entry: null, creation: null };
+      this.#videos.set(videoId, video);
     }
+    if (video.creation) {
+      return video.creation;
+    }
+    const cleanup = video.entry?.cleanup;
+    const creation = cleanup
+      ? cleanup.then(() => this.#createStream(videoId, video))
+      : this.#createStream(videoId, video);
+    video.creation = creation;
+    void creation.catch(() => {
+      // A cancelled creation can reject after its replacement has been registered.
+      if (video.creation === creation) {
+        video.creation = null;
+        if (!video.entry) {
+          this.#videos.delete(videoId);
+        }
+      }
+    });
+    return creation;
+  }
 
+  async stop(id: string): Promise<boolean> {
+    const entry = this.#entries.get(id);
+    if (!entry) {
+      return false;
+    }
+    await this.#remove(entry, 'manual');
+    return true;
+  }
+
+  async #createStream(videoId: string, video: VideoRegistration): Promise<RegisteredStream> {
+    video.entry = null;
+    const entry = this.#createEntry(videoId);
+    video.entry = entry;
+    try {
+      await entry.startup;
+      entry.controller.signal.throwIfAborted();
+      return entry.stream;
+    } catch (error) {
+      await this.#remove(entry, 'start-failed', error);
+      throw error;
+    }
+  }
+
+  #createEntry(videoId: string): RegistryEntry {
     const id = crypto.randomUUID();
     const identity: StreamIdentity = { id, videoId };
     const logger = this.#streamLogger(identity);
@@ -102,26 +152,8 @@ export class StreamRegistry {
       }
     });
     this.#entries.set(id, entry);
-    this.#videos.set(videoId, entry);
     entry.startup = Promise.resolve().then(() => this.#start(entry));
-
-    try {
-      await entry.startup;
-      entry.controller.signal.throwIfAborted();
-      return entry.stream;
-    } catch (error) {
-      await this.#remove(entry, 'start-failed', error);
-      throw error;
-    }
-  }
-
-  async stop(id: string): Promise<boolean> {
-    const entry = this.#entries.get(id);
-    if (!entry) {
-      return false;
-    }
-    await this.#remove(entry, 'manual');
-    return true;
+    return entry;
   }
 
   async #start(entry: RegistryEntry): Promise<void> {
@@ -146,15 +178,15 @@ export class StreamRegistry {
       return entry.cleanup;
     }
     this.#entries.delete(entry.stream.id);
-    entry.controller.abort(new StreamStartupCancelledError());
-    entry.logger.info({ reason }, 'stream removed');
+    const video = this.#videos.get(entry.stream.videoId)!;
 
-    // Wait for raw startup, not create(): its error handler joins this same cleanup.
+    // Publish cleanup before abort callbacks; wait for raw startup, not create(),
+    // whose error handler joins this same cleanup.
     entry.cleanup = Promise.resolve().then(async () => {
       try {
         await entry.pipeline.stop();
         await entry.startup.catch(() => {});
-        if (this.#videos.get(entry.stream.videoId) === entry) {
+        if (!video.creation) {
           this.#videos.delete(entry.stream.videoId);
         }
         const id = entry.stream.id;
@@ -171,6 +203,9 @@ export class StreamRegistry {
         throw cleanupError;
       }
     });
+    video.creation = null;
+    entry.controller.abort(new StreamStartupCancelledError());
+    entry.logger.info({ reason }, 'stream removed');
     return entry.cleanup;
   }
 
