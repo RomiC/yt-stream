@@ -259,6 +259,7 @@ These are application defaults, not configurable environment variables unless no
 | Zero-listener TTL      | 15 min (`STREAM_TTL_MINUTES`)          | Check immediately after startup, then every 60 s. Listeners reset the idle clock; `0` disables the watcher.                          |
 | YouTube oEmbed fetch   | 5 s                                    | Best-effort metadata lookup after startup; failure does not stop audio.                                                              |
 | Health probe           | 2 s per component                      | Probes run concurrently on each health request; a timeout makes the component `error`.                                               |
+| API idle timeout       | 30 s                                   | `Bun.serve` drops a connection idle for 30 s, so the 10 s default cut slow starts off as a `502` at Caddy.                           |
 
 Poll deadlines are checked between fetches, so the in-flight request can extend a mount wait beyond its nominal budget. A start request may span multiple activation waits, mount-release waits, and process shutdowns; 30 s is **not** a total HTTP request deadline. The health monitor's 2 s stream probe can time out while `/api/state` waits on a 5 s Icecast fetch.
 
