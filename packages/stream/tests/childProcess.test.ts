@@ -164,4 +164,21 @@ describe('ChildProcess', () => {
     expect(echoed.toString()).toBe('ping');
     await Promise.all([source.kill(), sink.kill()]);
   });
+
+  test('a pipe whose sink dies mid-stream is not fatal', async () => {
+    const source = new FakeTool({});
+    const sink = new FakeTool({});
+    source.spawnProcess(
+      ['-e', "setInterval(() => process.stdout.write('x'.repeat(65536)), 1)"],
+      ['ignore', 'pipe', 'ignore']
+    );
+    sink.spawnProcess(EXIT_NOW, ['pipe', 'ignore', 'ignore']);
+    const sinkProc = sink.process!;
+
+    source.pipe(sink);
+    await once(sinkProc, 'close');
+
+    expect(source.isAlive()).toBe(true);
+    await source.kill();
+  });
 });

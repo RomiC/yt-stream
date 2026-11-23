@@ -108,7 +108,12 @@ export class ChildProcess {
   }
 
   pipe(target: ChildProcess): ChildProcess {
-    this.#proc!.stdout!.pipe(target.#proc!.stdin!);
+    const output = this.#proc!.stdout!;
+    const input = target.#proc!.stdin!;
+    // Killing one side breaks the pipe with EPIPE; an unhandled stream error takes the app down.
+    output.on('error', () => {});
+    input.on('error', () => {});
+    output.pipe(input);
     return target;
   }
 }
