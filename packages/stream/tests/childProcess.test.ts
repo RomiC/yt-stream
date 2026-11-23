@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { once } from 'node:events';
 import type { StdioOptions } from 'node:child_process';
+import { sleep } from './helpers';
 import type { ChildProcess, ProcessExit } from '../src/childProcess';
 
 const KEEP_ALIVE = ['-e', 'setInterval(() => {}, 1000)'];
@@ -180,5 +181,25 @@ describe('ChildProcess', () => {
 
     expect(source.isAlive()).toBe(true);
     await source.kill();
+  });
+
+  test('kill resolves when the source is stopped while its pipe is still live', async () => {
+    const source = new FakeTool({});
+    const sink = new FakeTool({});
+    source.spawnProcess(
+      ['-e', "setInterval(() => process.stdout.write('x'.repeat(65536)), 1)"],
+      ['ignore', 'pipe', 'ignore']
+    );
+    sink.spawnProcess(KEEP_ALIVE, ['pipe', 'ignore', 'ignore']);
+
+    source.pipe(sink);
+    await sleep(100);
+
+    // Bun never emits `close` for this child, so kill must settle on `exit`.
+    const killed = await Promise.race([source.kill(), sleep(4_000).then(() => 'timeout')]);
+
+    expect(killed).toBe(true);
+    expect(source.isAlive()).toBe(false);
+    await sink.kill();
   });
 });

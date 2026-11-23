@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess as NodeChildProcess, StdioOptions } from 'node:child_process';
 
 const SIGKILL_AFTER_MS = 5_000;
+const EXIT_SETTLE_DELAY_MS = 250;
+const KILL_GIVE_UP_MS = 1_000;
 
 export interface ProcessExit {
   cmd: string;
@@ -64,19 +66,38 @@ export class ChildProcess {
     proc.on('error', (err) => {
       this.#errors += err.message;
     });
+    // Bun drops `close` once a stdio pipe broke, so `exit` settles the state after a grace period.
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    proc.on('exit', (code, signal) => {
+      settleTimer = setTimeout(() => this.#settle(code, signal), EXIT_SETTLE_DELAY_MS);
+    });
     proc.on('close', (code, signal) => {
-      this.#exited = true;
-      this.#proc = null;
-      if (this.#isKilledByOwner) {
-        return;
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
       }
-      const exit: ProcessExit = { cmd: this.#cmd, code, signal, pid: this.#pid, errors: this.#errors };
-      for (const callback of this.#exitCallbacks) {
-        callback(exit);
-      }
+      this.#settle(code, signal);
     });
 
     return this;
+  }
+
+  #settle(code: number | null, signal: string | null): void {
+    if (this.#exited) {
+      return;
+    }
+    this.#markExited();
+    if (this.#isKilledByOwner) {
+      return;
+    }
+    const exit: ProcessExit = { cmd: this.#cmd, code, signal, pid: this.#pid, errors: this.#errors };
+    for (const callback of this.#exitCallbacks) {
+      callback(exit);
+    }
+  }
+
+  #markExited(): void {
+    this.#exited = true;
+    this.#proc = null;
   }
 
   async kill(): Promise<boolean> {
@@ -89,14 +110,28 @@ export class ChildProcess {
     this.#isKilledByOwner = true;
 
     return new Promise((resolve) => {
-      proc.once('close', () => resolve(true));
-      if (proc.exitCode === null) {
-        const timer = setTimeout(() => {
-          if (proc.exitCode === null) {
-            proc.kill('SIGKILL');
-          }
-        }, this.#sigkillDelayMs);
-        proc.once('close', () => clearTimeout(timer));
+      let settled = false;
+      const done = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(sigkillTimer);
+        clearTimeout(giveUpTimer);
+        this.#markExited();
+        resolve(true);
+      };
+
+      proc.once('close', done);
+      proc.once('exit', done);
+      const sigkillTimer = setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) {
+          proc.kill('SIGKILL');
+        }
+      }, this.#sigkillDelayMs);
+      const giveUpTimer = setTimeout(done, this.#sigkillDelayMs + KILL_GIVE_UP_MS);
+
+      if (proc.exitCode === null && proc.signalCode === null) {
         proc.kill('SIGTERM');
       }
     });
