@@ -7,6 +7,8 @@ export class Ffmpeg extends ChildProcess {
 
   spawnProcess(outputUrl: string): this {
     const args = [
+      // Finite sources arrive unpaced; pace the input so CPU stays at realtime cost.
+      '-re',
       '-i',
       '-',
       '-c:a',

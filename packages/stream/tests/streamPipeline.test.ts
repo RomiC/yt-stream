@@ -361,6 +361,51 @@ describe('StreamPipeline', () => {
       expect(exits[0].signal).toBe('SIGKILL');
     });
 
+    test('a clean source end waits for ffmpeg to drain before reporting the exit', async () => {
+      const exits: ProcessExit[] = [];
+      const pipeline = createPipeline({ onExit: (exit) => exits.push(exit) });
+      await pipeline.start(SOURCE_URL);
+
+      (pipeline.streamlink as unknown as FakeStreamlink)?.die(0);
+
+      expect(exits.length).toBe(0);
+
+      (pipeline.ffmpeg as unknown as FakeFfmpeg)?.die(0);
+
+      expect(exits.length).toBe(1);
+      expect(exits[0].cmd).toBe('ffmpeg');
+      expect(exits[0].code).toBe(0);
+    });
+
+    test('a source end is reported after the drain timeout when ffmpeg never exits', async () => {
+      const exits: ProcessExit[] = [];
+      const pipeline = createPipeline({ onExit: (exit) => exits.push(exit) });
+      await pipeline.start(SOURCE_URL);
+
+      jest.useFakeTimers();
+      (pipeline.streamlink as unknown as FakeStreamlink)?.die(0);
+      expect(exits.length).toBe(0);
+
+      jest.advanceTimersByTime(5_000);
+      await flushAsync();
+
+      expect(exits.length).toBe(1);
+      expect(exits[0].cmd).toBe('streamlink');
+      jest.useRealTimers();
+    });
+
+    test('a failed source exit is reported immediately, without draining', async () => {
+      const exits: ProcessExit[] = [];
+      const pipeline = createPipeline({ onExit: (exit) => exits.push(exit) });
+      await pipeline.start(SOURCE_URL);
+
+      (pipeline.streamlink as unknown as FakeStreamlink)?.die(1);
+
+      expect(exits.length).toBe(1);
+      expect(exits[0].cmd).toBe('streamlink');
+      expect(exits[0].code).toBe(1);
+    });
+
     test('readiness: keeps polling until the mountpoint becomes active', async () => {
       jest.useFakeTimers();
       const pipeline = createPipeline();
