@@ -71,6 +71,8 @@ export function createServer({
   const server = Bun.serve({
     port,
     hostname,
+    // A start request can wait for extraction and the mount (30 s budget) — the 10 s default kills it.
+    idleTimeout: 30,
     routes: {
       '/api/state': { GET: withLogging(withAuth(stateEndpoint, config), logger) },
       '/api/stream': {

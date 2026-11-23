@@ -22,6 +22,7 @@ describe('Ffmpeg', () => {
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].cmd).toBe('ffmpeg');
     expect(spawnCalls[0].args).toEqual([
+      '-re',
       '-i',
       '-',
       '-c:a',

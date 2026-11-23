@@ -163,7 +163,11 @@ export class Stream {
       return;
     }
     const { how, tail } = describeExit(exit);
-    this.#logger.error({ cmd: exit.cmd, exit: how, tail }, 'unexpected process exit');
+    if (exit.code === 0 && !exit.signal) {
+      this.#logger.info({ cmd: exit.cmd, exit: how }, 'source finished');
+    } else {
+      this.#logger.error({ cmd: exit.cmd, exit: how, tail }, 'unexpected process exit');
+    }
     await this.#stopPipeline(set, 'process-exit');
   }
 

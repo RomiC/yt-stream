@@ -11,6 +11,7 @@ import type { Logger } from 'yt-stream-shared';
 const MOUNTPOINT_TIMEOUT = 30_000;
 const POLL_INTERVAL = 500;
 const START_ATTEMPTS = 3;
+const DRAIN_TIMEOUT = 5_000;
 
 export interface PipelineIcecast {
   getStatus(): Promise<IcecastProbe>;
@@ -51,6 +52,7 @@ export class StreamPipeline {
   #lastProxy: string | null = null;
   #exitCallbacks: ((exit: ProcessExit) => void)[] = [];
   #lastExit: ProcessExit | null = null;
+  #drainTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor({ id, url, streamlinkQuality, proxies, streamTtlMinutes, icecast, logger }: StreamPipelineOptions) {
     this.#id = id;
@@ -159,6 +161,7 @@ export class StreamPipeline {
   }
 
   async #killProcesses(): Promise<void> {
+    this.#clearDrain();
     await Promise.all([this.#streamlink?.kill() ?? false, this.#ffmpeg?.kill() ?? false]);
   }
 
@@ -188,8 +191,27 @@ export class StreamPipeline {
 
   #onWrapperExit(exit: ProcessExit): void {
     this.#lastExit = exit;
+    // A finite source ends cleanly while ffmpeg still holds pipe and codec buffers:
+    // let it drain instead of truncating, but never wait on it indefinitely.
+    if (this.#ready && exit.cmd === 'streamlink' && exit.code === 0 && !exit.signal && this.#ffmpeg?.isAlive()) {
+      this.#logger.info({ cmd: exit.cmd, drainTimeoutMs: DRAIN_TIMEOUT }, 'source ended, draining output');
+      this.#drainTimer = setTimeout(() => this.#emitExit(exit), DRAIN_TIMEOUT);
+      return;
+    }
+    this.#emitExit(exit);
+  }
+
+  #emitExit(exit: ProcessExit): void {
+    this.#clearDrain();
     for (const callback of this.#exitCallbacks) {
       callback(exit);
+    }
+  }
+
+  #clearDrain(): void {
+    if (this.#drainTimer !== null) {
+      clearTimeout(this.#drainTimer);
+      this.#drainTimer = null;
     }
   }
 

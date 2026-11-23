@@ -354,6 +354,21 @@ describe('Stream', () => {
       expect(app.pipeline.ttlWatcher.stops).toBe(1);
     });
 
+    test('a clean source end stops the stream without an error log', async () => {
+      const logger = captureLogger();
+      const app = createStream(logger as unknown as Logger);
+      const onStopped = vi.fn();
+      app.events.on(Event.streamStopped, onStopped);
+
+      await app.stream.start(URL_UNDER_TEST);
+      app.pipeline.die({ cmd: 'ffmpeg', code: 0, signal: null, pid: 4242, errors: '' });
+      await flushAsync();
+
+      expect(onStopped.mock.calls[0][0]).toEqual({ reason: 'process-exit', url: URL_UNDER_TEST });
+      expect(logger.entries.some((entry) => entry.msg === 'unexpected process exit')).toBe(false);
+      expect(logger.entries.find((entry) => entry.msg === 'source finished')?.level).toBe('info');
+    });
+
     test('TTL expiry stops the stream with reason ttl', async () => {
       const app = createStream();
       const onStopped = vi.fn();
